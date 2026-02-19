@@ -1,0 +1,117 @@
+{
+  "name": "kat-csharp-test-explorer",
+  "displayName": "KAT - C# Test Explorer",
+  "description": "C# test discovery and execution using VS Code Testing API",
+  "version": "0.1.0",
+  "publisher": "conduent-kat-team",
+  "author": {
+    "name": "Terry Aney",
+    "email": "terry.aney@icloud.com"
+  },
+  "repository": {
+    "type": "git",
+	"url": "https://github.com/terryaney/Extensibility.VS.Code.Test.Explorer"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Testing"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "workspaceContains:**/*.csproj",
+    "workspaceContains:**/*.sln"
+  ],
+  "contributes": {
+    "testing": {},
+    "commands": [
+      {
+        "command": "test-explorer.refreshTests",
+        "title": "Refresh Tests",
+        "category": "KAT C# Test Explorer",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "test-explorer.showOutput",
+        "title": "Show Output",
+        "category": "KAT C# Test Explorer"
+      },
+      {
+        "command": "test-explorer.showNoProjectsHelp",
+        "title": "Show Help: No Test Projects",
+        "category": "KAT C# Test Explorer"
+      },
+      {
+        "command": "test-explorer.restartWorker",
+        "title": "Restart Test Service",
+        "category": "KAT C# Test Explorer"
+      },
+      {
+        "command": "test-explorer.showLoadError",
+        "title": "Show Project Load Error Details",
+        "category": "KAT C# Test Explorer"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "test-explorer.refreshTests",
+          "when": "view == workbench.view.testing",
+          "group": "navigation"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "test-explorer.refreshTests",
+          "when": "true"
+        }
+      ],
+      "testing/item/context": [
+        {
+          "command": "test-explorer.showNoProjectsHelp",
+          "when": "testId =~ /diagnostic:no-projects/",
+          "group": "inline"
+        },
+        {
+          "command": "test-explorer.restartWorker",
+          "when": "testId =~ /diagnostic:worker-unavailable/",
+          "group": "inline"
+        },
+        {
+          "command": "test-explorer.showLoadError",
+          "when": "testId =~ /diagnostic:load-error/",
+          "group": "inline"
+        }
+      ]
+    }
+  },
+  "extensionDependencies": [
+    "ms-dotnettools.csharp"
+  ],
+  "scripts": {
+    "build-worker": "powershell -ExecutionPolicy Bypass -File ./scripts/build-worker.ps1",
+    "vscode:prepublish": "npm run build-worker && node esbuild.js --production",
+    "compile": "node esbuild.js",
+    "watch": "node esbuild.js --watch",
+    "pretest": "npm run compile",
+    "lint": "eslint src --ext ts",
+    "package": "vsce package --allow-missing-repository --no-yarn --no-update-package-json"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "@types/uuid": "^11.0.0",
+    "@types/vscode": "^1.85.0",
+    "@typescript-eslint/eslint-plugin": "^6.13.0",
+    "@typescript-eslint/parser": "^6.13.0",
+    "@vscode/test-electron": "^2.3.8",
+    "@vscode/vsce": "^2.22.0",
+    "esbuild": "^0.27.3",
+    "eslint": "^8.54.0",
+    "typescript": "^5.3.3"
+  },
+  "dependencies": {
+    "fast-xml-parser": "^5.3.6",
+    "uuid": "^13.0.0"
+  }
+}
