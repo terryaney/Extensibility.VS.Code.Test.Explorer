@@ -15,7 +15,10 @@ namespace TestExplorer.Worker.Discovery;
 /// </summary>
 public sealed class XunitDiscovery
 {
-    private static readonly string[] XunitTestAttributes = { "Fact", "Theory" };
+	private static readonly string[] XunitTestAttributes = [ "Fact", "Theory" ];
+	private const string FactAttributeName = "FactAttribute";
+    private const string TheoryAttributeName = "TheoryAttribute";
+    private const string XunitNamespace = "Xunit";
 
     /// <summary>
     /// Discovers all xUnit tests in the specified project.
@@ -23,14 +26,11 @@ public sealed class XunitDiscovery
     /// <param name="project">The Roslyn project to scan for tests.</param>
     /// <param name="cancellationToken">Cancellation token for the operation.</param>
     /// <returns>Collection of discovered test metadata.</returns>
-    public async Task<IReadOnlyList<DiscoveredTest>> DiscoverTestsAsync(
+    public static async Task<IReadOnlyList<DiscoveredTest>> DiscoverTestsAsync(
         Project project,
         CancellationToken cancellationToken = default)
     {
-        if (project == null)
-        {
-            return Array.Empty<DiscoveredTest>();
-        }
+        if (project == null) return Array.Empty<DiscoveredTest>();
 
         var compilation = await project.GetCompilationAsync(cancellationToken);
         if (compilation == null)
@@ -56,15 +56,16 @@ public sealed class XunitDiscovery
                 continue;
             }
 
-            var testMethods = FindTestMethods(syntaxRoot, semanticModel, cancellationToken);
+            var testMethods = FindTestMethods( syntaxRoot, semanticModel, cancellationToken);
             
-            foreach (var (methodDeclaration, methodSymbol) in testMethods)
+            foreach (var (methodDeclaration, methodSymbol, isTheory) in testMethods)
             {
                 var test = CreateDiscoveredTest(
                     methodDeclaration, 
                     methodSymbol, 
                     document.FilePath ?? string.Empty,
-                    project.FilePath ?? string.Empty);
+                    project.FilePath ?? string.Empty,
+                    isTheory);
                 
                 if (test != null)
                 {
@@ -79,12 +80,12 @@ public sealed class XunitDiscovery
     /// <summary>
     /// Finds all method declarations with xUnit test attributes.
     /// </summary>
-    private List<(MethodDeclarationSyntax Method, IMethodSymbol Symbol)> FindTestMethods(
+    private static List<(MethodDeclarationSyntax Method, IMethodSymbol Symbol, bool IsTheory)> FindTestMethods(
         SyntaxNode syntaxRoot,
         SemanticModel semanticModel,
         CancellationToken cancellationToken)
     {
-        var testMethods = new List<(MethodDeclarationSyntax, IMethodSymbol)>();
+        var testMethods = new List<(MethodDeclarationSyntax, IMethodSymbol, bool)>();
 
         var methodDeclarations = syntaxRoot.DescendantNodes()
             .OfType<MethodDeclarationSyntax>();
@@ -93,12 +94,13 @@ public sealed class XunitDiscovery
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            if (HasXunitTestAttribute(methodDeclaration))
+            var (isTest, isTheory) = GetXunitAttributeInfo( methodDeclaration, semanticModel, cancellationToken);
+            if (isTest)
             {
-                var methodSymbol = semanticModel.GetDeclaredSymbol(methodDeclaration, cancellationToken) as IMethodSymbol;
+                var methodSymbol = semanticModel.GetDeclaredSymbol(methodDeclaration, cancellationToken);
                 if (methodSymbol != null)
                 {
-                    testMethods.Add((methodDeclaration, methodSymbol));
+                    testMethods.Add((methodDeclaration, methodSymbol, isTheory));
                 }
             }
         }
@@ -107,45 +109,95 @@ public sealed class XunitDiscovery
     }
 
     /// <summary>
-    /// Checks if a method has a Fact or Theory attribute (xUnit test).
-    /// Detects attributes by name to avoid requiring xUnit assemblies.
+    /// Determines whether a method is an xUnit test and whether it is a theory.
+    /// Primary detection uses semantic symbols; raw syntax fallback is used when symbol resolution fails.
     /// </summary>
-    private bool HasXunitTestAttribute(MethodDeclarationSyntax methodDeclaration)
+    private static (bool IsTest, bool IsTheory) GetXunitAttributeInfo(
+        MethodDeclarationSyntax methodDeclaration,
+        SemanticModel semanticModel,
+        CancellationToken cancellationToken)
     {
         if (methodDeclaration.AttributeLists.Count == 0)
         {
-            return false;
+            return (false, false);
         }
+
+        var hasFact = false;
+        var hasTheory = false;
 
         foreach (var attributeList in methodDeclaration.AttributeLists)
         {
             foreach (var attribute in attributeList.Attributes)
             {
-                var attributeName = attribute.Name.ToString();
-                
-                // Handle both "Fact" and "FactAttribute" forms
-                foreach (var testAttributeName in XunitTestAttributes)
+                cancellationToken.ThrowIfCancellationRequested();
+
+                var symbolInfo = semanticModel.GetSymbolInfo(attribute, cancellationToken);
+                var attributeSymbol = symbolInfo.Symbol ?? symbolInfo.CandidateSymbols.FirstOrDefault();
+                var attributeType = attributeSymbol?.ContainingType;
+
+                if (attributeType != null
+                    && attributeType.ContainingNamespace?.ToDisplayString() == XunitNamespace)
                 {
-                    if (attributeName == testAttributeName || 
-                        attributeName == $"{testAttributeName}Attribute")
+                    if (attributeType.Name == FactAttributeName)
                     {
-                        return true;
+                        hasFact = true;
                     }
+
+                    if (attributeType.Name == TheoryAttributeName)
+                    {
+                        hasTheory = true;
+                    }
+
+                    if (hasFact || hasTheory)
+                    {
+                        continue;
+                    }
+                }
+
+                var attributeName = attribute.Name.ToString();
+                if (IsRawAttributeMatch(attributeName, "Fact"))
+                {
+                    hasFact = true;
+                }
+                else if (IsRawAttributeMatch(attributeName, "Theory"))
+                {
+                    hasTheory = true;
                 }
             }
         }
 
-        return false;
+        return (hasFact || hasTheory, hasTheory);
+    }
+
+    private static bool IsRawAttributeMatch(string attributeName, string expectedShortName)
+    {
+        if (string.IsNullOrWhiteSpace(attributeName))
+        {
+            return false;
+        }
+
+        var normalized = attributeName.Trim();
+
+        if (normalized.StartsWith("global::", StringComparison.Ordinal))
+        {
+            normalized = normalized[ "global::".Length.. ];
+        }
+
+        var lastSegment = normalized.Split('.').LastOrDefault() ?? normalized;
+
+        return lastSegment == expectedShortName
+            || lastSegment == $"{expectedShortName}Attribute";
     }
 
     /// <summary>
     /// Creates a DiscoveredTest record from method declaration and symbol.
     /// </summary>
-    private DiscoveredTest? CreateDiscoveredTest(
+    private static DiscoveredTest? CreateDiscoveredTest(
         MethodDeclarationSyntax methodDeclaration,
         IMethodSymbol methodSymbol,
         string filePath,
-        string projectPath)
+        string projectPath,
+        bool isTheory)
     {
         var fullyQualifiedName = SymbolId.GetFullyQualifiedName(methodSymbol);
         if (string.IsNullOrEmpty(fullyQualifiedName))
@@ -153,7 +205,7 @@ public sealed class XunitDiscovery
             return null;
         }
 
-        var location = methodDeclaration.GetLocation();
+        var location = GetPreferredMethodStartLocation(methodDeclaration) ?? methodDeclaration.GetLocation();
         if (!location.IsInSource)
         {
             return null;
@@ -165,11 +217,17 @@ public sealed class XunitDiscovery
             return null;
         }
 
-        // LinePosition is 0-indexed, convert to 1-indexed for VS Code
-        var startLine = lineSpan.StartLinePosition.Line + 1;
-        var startColumn = lineSpan.StartLinePosition.Character + 1;
-        var endLine = lineSpan.EndLinePosition.Line + 1;
-        var endColumn = lineSpan.EndLinePosition.Character + 1;
+        var startLine = lineSpan.StartLinePosition.Line;
+        var startColumn = lineSpan.StartLinePosition.Character;
+
+        var endLineSpan = methodDeclaration.GetLocation().GetLineSpan();
+        if (!endLineSpan.IsValid)
+        {
+            return null;
+        }
+
+        var endLine = endLineSpan.EndLinePosition.Line;
+        var endColumn = endLineSpan.EndLinePosition.Character;
 
         return new DiscoveredTest(
             FullyQualifiedName: fullyQualifiedName,
@@ -178,7 +236,23 @@ public sealed class XunitDiscovery
             StartColumn: startColumn,
             EndLine: endLine,
             EndColumn: endColumn,
-            ProjectPath: projectPath);
+            ProjectPath: projectPath,
+            IsTheory: isTheory);
+    }
+
+    private static Location? GetPreferredMethodStartLocation(MethodDeclarationSyntax methodDeclaration)
+    {
+        if (methodDeclaration.Body != null)
+        {
+            return methodDeclaration.Body.OpenBraceToken.GetLocation();
+        }
+
+        if (methodDeclaration.ExpressionBody != null)
+        {
+            return methodDeclaration.ExpressionBody.ArrowToken.GetLocation();
+        }
+
+        return methodDeclaration.Identifier.GetLocation();
     }
 }
 
@@ -187,10 +261,10 @@ public sealed class XunitDiscovery
 /// </summary>
 /// <param name="FullyQualifiedName">Fully qualified name of the test method (e.g., "MyNamespace.MyClass.MyTestMethod").</param>
 /// <param name="FilePath">Absolute path to the source file containing the test.</param>
-/// <param name="StartLine">Starting line number (1-indexed).</param>
-/// <param name="StartColumn">Starting column number (1-indexed).</param>
-/// <param name="EndLine">Ending line number (1-indexed).</param>
-/// <param name="EndColumn">Ending column number (1-indexed).</param>
+/// <param name="StartLine">Starting line number (0-indexed).</param>
+/// <param name="StartColumn">Starting column number (0-indexed).</param>
+/// <param name="EndLine">Ending line number (0-indexed).</param>
+/// <param name="EndColumn">Ending column number (0-indexed).</param>
 /// <param name="ProjectPath">Absolute path to the project file containing the test.</param>
 public record DiscoveredTest(
     string FullyQualifiedName,
@@ -199,4 +273,5 @@ public record DiscoveredTest(
     int StartColumn,
     int EndLine,
     int EndColumn,
-    string ProjectPath);
+    string ProjectPath,
+    bool IsTheory);

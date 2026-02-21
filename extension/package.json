@@ -33,9 +33,23 @@
         "icon": "$(refresh)"
       },
       {
+        "command": "test-explorer.runTestFromGutter",
+        "title": "Run Test",
+        "category": "KAT C# Test Explorer",
+        "icon": "$(run-all)"
+      },
+      {
+        "command": "test-explorer.debugTestFromGutter",
+        "title": "Debug Test",
+        "category": "KAT C# Test Explorer",
+        "icon": "$(debug-alt)"
+      },
+      {
+        "_note": "To restore toolbar button, add to menus[\"view/title\"]: { \"command\": \"test-explorer.showOutput\", \"when\": \"view == workbench.view.testing\", \"group\": \"navigation@2\" }",
         "command": "test-explorer.showOutput",
         "title": "Show Output",
-        "category": "KAT C# Test Explorer"
+        "category": "KAT C# Test Explorer",
+        "icon": "$(output)"
       },
       {
         "command": "test-explorer.showNoProjectsHelp",
@@ -81,6 +95,16 @@
         {
           "command": "test-explorer.showLoadError",
           "when": "testId =~ /diagnostic:load-error/",
+          "group": "inline"
+        }
+      ],
+      "testing/item/gutter": [
+        {
+          "command": "test-explorer.runTestFromGutter",
+          "group": "inline"
+        },
+        {
+          "command": "test-explorer.debugTestFromGutter",
           "group": "inline"
         }
       ]

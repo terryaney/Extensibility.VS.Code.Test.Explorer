@@ -40,7 +40,15 @@ export interface TestMethodDto {
     id: string;
     name: string;
     fullyQualifiedName: string;
+    isTheory: boolean;
+    cases?: TestCaseDto[];
     location: TestLocation;
+}
+
+export interface TestCaseDto {
+    fullyQualifiedName: string;
+    displayName: string;
+    isTheory: boolean;
 }
 
 export interface TestClassDto {
@@ -57,6 +65,7 @@ export interface TestNamespaceDto {
 export interface TestProjectDto {
     name: string;
     projectPath: string;
+    targetFramework: string;
     namespaces: TestNamespaceDto[];
 }
 

@@ -73,13 +73,10 @@ Open the Output panel (`Ctrl+Shift+U`) and select **KAT C# Test Explorer** from 
 
 ## Known Issues
 
-### Run profile icons static during execution
-When running tests, tree/gutter/Test Results icons remain static during the run and only flip to pass/fail at completion. The debug profile correctly shows spinning icons. Root cause: `run.started()` is not being called on parent (class/namespace) nodes.
+### `System.MissingMethodException` suppressed during v2 debug sessions
+When debugging xUnit v2 tests, the extension silently suppresses `System.MissingMethodException` for the duration of the debug session. This is intentional — the xUnit VSTest adapter throws this exception internally during initialization (an `InlineDataDiscoverer` constructor signature mismatch), and without suppression it causes a spurious debugger stop before any test code runs.
 
-### Debug breakpoints not hitting
-Debug attach works (testhost PID is found, coreclr attaches, `VSTEST_DEBUG_NOBP=1` suppresses the VSTest internal `Debugger.Break()`), but user breakpoints are not being hit. The exact cause is unknown — the DAP message sequence during coreclr attach needs to be captured to diagnose. See `PLAN.md` for full history of attempted fixes.
-
-To help diagnose this, enable verbose DAP logging by examining the **KAT C# Test Explorer** output channel during a debug run for messages prefixed with `DAP →` and `DAP ←`.
+The suppression is type-scoped: all `System.MissingMethodException` throws are ignored, not just those from the xUnit adapter. The DAP protocol does not support assembly-level exception filtering. If you have a legitimate `MissingMethodException` in your own code during a v2 test debug session, it will not trigger the debugger — you would need to catch it explicitly or switch to a regular run to observe it.
 
 ## License
 

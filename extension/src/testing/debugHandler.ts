@@ -6,7 +6,7 @@ import { spawn } from 'child_process';
 import { v4 as uuidv4 } from 'uuid';
 import { WorkerClient } from '../worker/workerClient';
 import { buildVSTestFilter, shouldRunAll } from './filterBuilder';
-import { getProjectPath, getTestMetadata } from './testItemStore';
+import { getProjectPath, getTestMetadata, isLeafRunnableItem } from './testItemStore';
 import { parseTrxFile } from '../results/trxParser';
 import { applyTestResults } from '../results/resultMapper';
 import { findTrxFile } from '../dotnet/dotnetTestRunner';
@@ -38,7 +38,9 @@ export function createDebugHandler(
             for (const [projectPath, tests] of Array.from(testsByProject.entries())) {
                 if (token.isCancellationRequested) { break; }
 
-                for (const test of tests) { run.started(test); }
+                for (const test of tests) {
+                    enqueueSelectedLeafRunnableItems(run, test);
+                }
 
                 // Build first so it doesn't eat into the debugger-attach window.
                 run.appendOutput(`\r\nBuilding ${path.basename(projectPath)}...\r\n`);
@@ -56,7 +58,7 @@ export function createDebugHandler(
 
                 if (buildResult !== 0) {
                     for (const test of tests) {
-                        run.errored(test, new vscode.TestMessage('Build failed before debug run'));
+                        markSelectedLeafRunnableItemsErrored(run, test, 'Build failed before debug run');
                     }
                     continue;
                 }
@@ -67,7 +69,9 @@ export function createDebugHandler(
                 const targetPath = await getProjectTargetPath(projectPath, outputChannel);
                 const exePath = targetPath ? targetPath.replace(/\.dll$/i, '.exe') : undefined;
                 const isXunitV3 = !!exePath && fs.existsSync(exePath);
-                outputChannel.appendLine(`Target path: ${targetPath ?? '(unknown)'} | exe: ${exePath ?? '(none)'} | xUnit v3 direct: ${isXunitV3}`);
+                const hasCaseKindSelection = hasCaseKindInSelection(tests);
+                const useXunitV3Direct = isXunitV3 && !hasCaseKindSelection;
+                outputChannel.appendLine(`Target path: ${targetPath ?? '(unknown)'} | exe: ${exePath ?? '(none)'} | xUnit v3 direct: ${useXunitV3Direct} | has case-kind selection: ${hasCaseKindSelection}`);
 
                 run.appendOutput(`\r\n=== Debugging tests in ${path.basename(projectPath)} ===\r\n`);
                 run.appendOutput(`\r\nStarting test runner... waiting for debugger attachment.\r\n`);
@@ -75,7 +79,7 @@ export function createDebugHandler(
                 let pid: number | undefined;
                 let processName: string | undefined;
 
-                if (isXunitV3) {
+                if (useXunitV3Direct) {
                     // xUnit v3 -waitForDebugger prints "Waiting for debugger to be attached..."
                     // but does NOT print its PID. Attach by process name instead.
                     processName = path.basename(exePath!, '.exe');
@@ -83,7 +87,7 @@ export function createDebugHandler(
                     if (!ready) {
                         outputChannel.appendLine('xUnit v3 process did not become ready for debug attach');
                         for (const test of tests) {
-                            run.errored(test, new vscode.TestMessage('xUnit v3 test runner did not start'));
+                            markSelectedLeafRunnableItemsErrored(run, test, 'xUnit v3 test runner did not start');
                         }
                         continue;
                     }
@@ -109,7 +113,7 @@ export function createDebugHandler(
                 if (!pid && !processName) {
                     outputChannel.appendLine('Could not find runner PID - debug attach failed');
                     for (const test of tests) {
-                        run.errored(test, new vscode.TestMessage('Could not find test runner process to attach to'));
+                        markSelectedLeafRunnableItemsErrored(run, test, 'Could not find test runner process to attach to');
                     }
                     continue;
                 }
@@ -125,17 +129,48 @@ export function createDebugHandler(
                     name: SESSION_NAME,
                     request: 'attach',
                     ...(processName ? { processName } : { processId: pid }),
-                    justMyCode: false,
+                    justMyCode: true,
                     requireExactSource: false,
                     suppressJITOptimizations: true
                 };
 
+                // Intercept setExceptionBreakpoints for this session and inject a suppression
+                // for System.MissingMethodException. The xUnit v2 VSTest adapter throws this
+                // internally during initialization (InlineDataDiscoverer ctor not found) —
+                // it is caught internally and harmless, but fires before user code runs.
+                // exceptionOptions in the attach config is overridden by VS Code's
+                // setExceptionBreakpoints message, so we must patch it here instead.
+                const trackerReg = vscode.debug.registerDebugAdapterTrackerFactory('coreclr', {
+                    createDebugAdapterTracker(session: vscode.DebugSession): vscode.DebugAdapterTracker | undefined {
+                        if (session.name !== SESSION_NAME) { return undefined; }
+                        return {
+                            onWillReceiveMessage(message: any) {
+                                if (message.command !== 'setExceptionBreakpoints') { return; }
+                                const args = message.arguments ?? (message.arguments = {});
+                                const opts: any[] = args.exceptionOptions ?? [];
+                                const alreadyPresent = opts.some((o: any) =>
+                                    o.path?.some((p: any) =>
+                                        Array.isArray(p.names) && p.names.includes('System.MissingMethodException')));
+                                if (!alreadyPresent) {
+                                    opts.push({
+                                        path: [{ names: ['CLR'] }, { names: ['System.MissingMethodException'] }],
+                                        breakMode: 'never'
+                                    });
+                                    args.exceptionOptions = opts;
+                                }
+                                outputChannel.appendLine(`DAP → setExceptionBreakpoints (patched MissingMethodException → never)`);
+                            }
+                        };
+                    }
+                });
+
                 const started = await vscode.debug.startDebugging(undefined, attachConfig, { testRun: run });
 
                 if (!started) {
+                    trackerReg.dispose();
                     outputChannel.appendLine('Failed to start attach debug session');
                     for (const test of tests) {
-                        run.errored(test, new vscode.TestMessage('Failed to attach debugger to test runner'));
+                        markSelectedLeafRunnableItemsErrored(run, test, 'Failed to attach debugger to test runner');
                     }
                     continue;
                 }
@@ -156,9 +191,10 @@ export function createDebugHandler(
                     });
                 });
 
+                trackerReg.dispose();
                 outputChannel.appendLine('Debug session ended.');
 
-                if (!isXunitV3) {
+                if (!useXunitV3Direct) {
                     // VSTest path: parse TRX for results
                     await new Promise(r => setTimeout(r, 500));
                     const logFilePrefix2 = `debug-run`;
@@ -167,20 +203,24 @@ export function createDebugHandler(
                         try {
                             const trxResults = await parseTrxFile(trxFile);
                             outputChannel.appendLine(`Parsed ${trxResults.length} result(s)`);
-                            applyTestResults(controller, trxResults, run, outputChannel);
+                            void applyTestResults(controller, trxResults, run, outputChannel, tests);
                         } catch (e) {
                             const msg = e instanceof Error ? e.message : String(e);
                             for (const test of tests) {
-                                run.errored(test, new vscode.TestMessage(`TRX parse error: ${msg}`));
+                                markSelectedLeafRunnableItemsErrored(run, test, `TRX parse error: ${msg}`);
                             }
                         }
                     } else {
                         outputChannel.appendLine('TRX not found - marking tests as passed');
-                        for (const test of tests) { run.passed(test); }
+                        for (const test of tests) {
+                            markSelectedLeafRunnableItemsPassed(run, test);
+                        }
                     }
                 } else {
                     // xUnit v3 direct: no TRX produced; mark passed (debug run)
-                    for (const test of tests) { run.passed(test); }
+                    for (const test of tests) {
+                        markSelectedLeafRunnableItemsPassed(run, test);
+                    }
                 }
             }
 
@@ -365,6 +405,47 @@ function collectTests(item: vscode.TestItem, tests: vscode.TestItem[]): void {
     item.children.forEach(child => collectTests(child, tests));
 }
 
+function enqueueTestAndAncestors(run: vscode.TestRun, test: vscode.TestItem): void {
+    run.enqueued(test);
+}
+
+function enqueueSelectedLeafRunnableItems(run: vscode.TestRun, test: vscode.TestItem): void {
+    if (isLeafRunnableItem(test)) {
+        enqueueTestAndAncestors(run, test);
+        return;
+    }
+
+    test.children.forEach(child => {
+        enqueueSelectedLeafRunnableItems(run, child);
+    });
+}
+
+function markSelectedLeafRunnableItemsErrored(
+    run: vscode.TestRun,
+    test: vscode.TestItem,
+    message: string
+): void {
+    if (isLeafRunnableItem(test)) {
+        run.errored(test, new vscode.TestMessage(message));
+        return;
+    }
+
+    test.children.forEach(child => {
+        markSelectedLeafRunnableItemsErrored(run, child, message);
+    });
+}
+
+function markSelectedLeafRunnableItemsPassed(run: vscode.TestRun, test: vscode.TestItem): void {
+    if (isLeafRunnableItem(test)) {
+        run.passed(test);
+        return;
+    }
+
+    test.children.forEach(child => {
+        markSelectedLeafRunnableItemsPassed(run, child);
+    });
+}
+
 function groupTestsByProject(tests: readonly vscode.TestItem[]): Map<string, vscode.TestItem[]> {
     const grouped = new Map<string, vscode.TestItem[]>();
     for (const test of tests) {
@@ -375,4 +456,24 @@ function groupTestsByProject(tests: readonly vscode.TestItem[]): Map<string, vsc
         }
     }
     return grouped;
+}
+
+function hasCaseKindInSelection(tests: readonly vscode.TestItem[]): boolean {
+    const visited = new Set<string>();
+    const stack: vscode.TestItem[] = [...tests];
+
+    while (stack.length > 0) {
+        const item = stack.pop()!;
+        if (visited.has(item.id)) { continue; }
+        visited.add(item.id);
+
+        const metadata = getTestMetadata(item);
+        if (metadata?.kind === 'case') {
+            return true;
+        }
+
+        item.children.forEach(child => stack.push(child));
+    }
+
+    return false;
 }

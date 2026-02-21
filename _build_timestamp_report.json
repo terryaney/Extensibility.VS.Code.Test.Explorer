@@ -1,0 +1,80 @@
+{
+  "items": [
+    {
+      "path": "c:/BTR/Camelot/Extensibility/TestExplorer/extension/dist/worker/TestExplorer.Worker.dll",
+      "exists": true,
+      "mtime": "2026-02-18T15:16:35.760Z",
+      "mtimeMs": 1771427795760.384,
+      "size": 47104
+    },
+    {
+      "path": "c:/BTR/Camelot/Extensibility/TestExplorer/extension/out/extension.js",
+      "exists": true,
+      "mtime": "2026-02-20T04:32:26.533Z",
+      "mtimeMs": 1771561946532.9866,
+      "size": 117630
+    },
+    {
+      "path": "c:/BTR/Camelot/Extensibility/TestExplorer/extension/src/testing/controller.ts",
+      "exists": true,
+      "mtime": "2026-02-20T04:32:13.214Z",
+      "mtimeMs": 1771561933214.0657,
+      "size": 18154
+    },
+    {
+      "path": "c:/BTR/Camelot/Extensibility/TestExplorer/extension/src/results/resultMapper.ts",
+      "exists": true,
+      "mtime": "2026-02-20T04:32:13.214Z",
+      "mtimeMs": 1771561933214.0657,
+      "size": 10430
+    },
+    {
+      "path": "c:/BTR/Camelot/Extensibility/TestExplorer/worker/TestExplorer.Worker/Discovery/XunitDiscovery.cs",
+      "exists": true,
+      "mtime": "2026-02-20T04:26:06.729Z",
+      "mtimeMs": 1771561566729.189,
+      "size": 9777
+    }
+  ],
+  "sortedOldestToNewest": [
+    {
+      "path": "c:/BTR/Camelot/Extensibility/TestExplorer/extension/dist/worker/TestExplorer.Worker.dll",
+      "mtime": "2026-02-18T15:16:35.760Z",
+      "size": 47104
+    },
+    {
+      "path": "c:/BTR/Camelot/Extensibility/TestExplorer/worker/TestExplorer.Worker/Discovery/XunitDiscovery.cs",
+      "mtime": "2026-02-20T04:26:06.729Z",
+      "size": 9777
+    },
+    {
+      "path": "c:/BTR/Camelot/Extensibility/TestExplorer/extension/src/testing/controller.ts",
+      "mtime": "2026-02-20T04:32:13.214Z",
+      "size": 18154
+    },
+    {
+      "path": "c:/BTR/Camelot/Extensibility/TestExplorer/extension/src/results/resultMapper.ts",
+      "mtime": "2026-02-20T04:32:13.214Z",
+      "size": 10430
+    },
+    {
+      "path": "c:/BTR/Camelot/Extensibility/TestExplorer/extension/out/extension.js",
+      "mtime": "2026-02-20T04:32:26.533Z",
+      "size": 117630
+    }
+  ],
+  "oldest": {
+    "path": "c:/BTR/Camelot/Extensibility/TestExplorer/extension/dist/worker/TestExplorer.Worker.dll",
+    "exists": true,
+    "mtime": "2026-02-18T15:16:35.760Z",
+    "mtimeMs": 1771427795760.384,
+    "size": 47104
+  },
+  "newest": {
+    "path": "c:/BTR/Camelot/Extensibility/TestExplorer/extension/out/extension.js",
+    "exists": true,
+    "mtime": "2026-02-20T04:32:26.533Z",
+    "mtimeMs": 1771561946532.9866,
+    "size": 117630
+  }
+}

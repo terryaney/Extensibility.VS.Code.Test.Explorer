@@ -7,6 +7,9 @@ import { createRunHandler } from './runHandler';
 import { createDebugHandler } from './debugHandler';
 import { logError, logInfo } from '../logging/outputChannel';
 
+let runProfileHandler: ((request: vscode.TestRunRequest, token: vscode.CancellationToken) => Promise<void>) | undefined;
+let debugProfileHandler: ((request: vscode.TestRunRequest, token: vscode.CancellationToken) => Promise<void>) | undefined;
+
 /**
  * Creates a new test item or returns an existing one if it already exists.
  * 
@@ -42,6 +45,14 @@ function createOrGetTestItem(
     item.canResolveChildren = !isLeaf;
     
     return item;
+}
+
+function hashDisplayName(s: string): string {
+    let h = 0;
+    for (let i = 0; i < s.length; i++) {
+        h = (Math.imul(31, h) + s.charCodeAt(i)) | 0;
+    }
+    return Math.abs(h).toString(16).padStart(8, '0');
 }
 
 /**
@@ -91,14 +102,12 @@ export function buildTestTree(controller: vscode.TestController, projects: TestP
     for (const project of projects) {
         // Get or create project node
         const projectId = project.projectPath;
-        const projectUri = vscode.Uri.file(project.projectPath);
-        const projectItem = createOrGetTestItem(
-            controller, 
-            controller, 
-            projectId, 
-            project.name, 
-            projectUri
-        );
+		const displayName = project.targetFramework?.trim() 
+			? `${project.name} (${project.targetFramework})` 
+			: project.name;
+		const projectItem = createOrGetTestItem(
+            controller, controller, projectId, displayName
+		);
         
         // Store project path mapping
         setProjectPath(projectId, project.projectPath);
@@ -130,8 +139,7 @@ export function buildTestTree(controller: vscode.TestController, projects: TestP
                 controller,
                 projectItem,
                 namespaceId,
-                namespace.name,
-                projectUri
+                namespace.name
             );
             setProjectPath(namespaceId, project.projectPath);
             const currentParent = namespaceItem;
@@ -159,9 +167,7 @@ export function buildTestTree(controller: vscode.TestController, projects: TestP
                     controller,
                     currentParent,
                     classId,
-                    testClass.name,
-                    classUri,
-                    classRange
+                    testClass.name
                 );
                 
                 setProjectPath(classId, project.projectPath);
@@ -192,10 +198,39 @@ export function buildTestTree(controller: vscode.TestController, projects: TestP
                     // Store metadata for method
                     const metadata: TestMetadata = {
                         fullyQualifiedName: method.fullyQualifiedName,
-                        projectPath: project.projectPath
+                        projectPath: project.projectPath,
+                        kind: 'method',
+                        isTheory: method.isTheory
                     };
                     setTestMetadata(methodItem, metadata);
                     setProjectPath(methodId, project.projectPath);
+
+                    if (method.isTheory && method.cases && method.cases.length > 0) {
+                        methodItem.canResolveChildren = true;
+
+                        for (const testCase of method.cases) {
+                            const caseKey = hashDisplayName(testCase.displayName);
+                            const caseId = `${project.projectPath}|${method.fullyQualifiedName}|case|${caseKey}`;
+                            const caseItem = createOrGetTestItem(
+                                controller,
+                                methodItem,
+                                caseId,
+                                testCase.displayName,
+                                methodUri,
+                                methodRange,
+                                true
+                            );
+
+                            setTestMetadata(caseItem, {
+                                fullyQualifiedName: method.fullyQualifiedName,
+                                projectPath: project.projectPath,
+                                kind: 'case',
+                                displayName: testCase.displayName,
+                                isTheory: true
+                            });
+                            setProjectPath(caseId, project.projectPath);
+                        }
+                    }
                 }
                 
                 // Sort methods in class
@@ -243,10 +278,36 @@ export function getTestMetadata(item: vscode.TestItem): TestMetadata | undefined
  * 
  * @param controller The test controller
  */
-export function clearTests(controller: vscode.TestController): void {
+export function clearTests(controller: vscode.TestController, testCountStatusBar: vscode.StatusBarItem): void {
     controller.items.forEach(item => {
         controller.items.delete(item.id);
     });
+
+    testCountStatusBar.text = '$(beaker) Tests';
+    testCountStatusBar.show();
+}
+
+function countLeafTestItems(controller: vscode.TestController): number {
+    let count = 0;
+
+    const visit = (item: vscode.TestItem): void => {
+        const metadata = getMetadata(item);
+
+        if (metadata?.kind === 'case') {
+            count++;
+            return;
+        }
+
+        if (metadata && item.children.size === 0) {
+            count++;
+            return;
+        }
+
+        item.children.forEach(child => visit(child));
+    };
+
+    controller.items.forEach(item => visit(item));
+    return count;
 }
 
 /**
@@ -263,6 +324,7 @@ export async function discoverAsync(
     workerClient: WorkerClient,
     outputChannel: vscode.OutputChannel,
     statusBarItem: vscode.StatusBarItem,
+    testCountStatusBar: vscode.StatusBarItem,
     token?: vscode.CancellationToken
 ): Promise<void> {
     try {
@@ -332,6 +394,10 @@ export async function discoverAsync(
     } finally {
         // Hide status bar indicator
         statusBarItem.hide();
+
+        const count = countLeafTestItems(controller);
+        testCountStatusBar.text = count > 0 ? `$(beaker) ${count} Tests` : '$(beaker) Tests';
+        testCountStatusBar.show();
     }
 }
 
@@ -339,7 +405,8 @@ export function createTestController(
     context: vscode.ExtensionContext,
     workerClient: WorkerClient,
     outputChannel: vscode.OutputChannel,
-    statusBarItem: vscode.StatusBarItem
+    statusBarItem: vscode.StatusBarItem,
+    testCountStatusBar: vscode.StatusBarItem
 ): vscode.TestController {
     const controller = vscode.tests.createTestController(
         'csharpTestExplorer',
@@ -351,7 +418,7 @@ export function createTestController(
         if (!item) {
             // Root level - discover all projects
             console.log('Resolving tests at root level...');
-            await discoverAsync(controller, workerClient, outputChannel, statusBarItem);
+            await discoverAsync(controller, workerClient, outputChannel, statusBarItem, testCountStatusBar);
         } else {
             // Project or namespace item - currently we discover all tests eagerly
             // This can be extended later for more granular discovery
@@ -361,7 +428,8 @@ export function createTestController(
 
     // Create Run profile
     const runHandler = createRunHandler(controller, workerClient, outputChannel);
-    const runProfile = controller.createRunProfile(
+    runProfileHandler = runHandler;
+    controller.createRunProfile(
         'Run Tests',
         vscode.TestRunProfileKind.Run,
         runHandler,
@@ -370,7 +438,8 @@ export function createTestController(
 
     // Create Debug profile
     const debugHandler = createDebugHandler(controller, workerClient, outputChannel);
-    const debugProfile = controller.createRunProfile(
+    debugProfileHandler = debugHandler;
+    controller.createRunProfile(
         'Debug Tests',
         vscode.TestRunProfileKind.Debug,
         debugHandler,
@@ -378,4 +447,32 @@ export function createTestController(
     );
 
     return controller;
+}
+
+export async function runTestItem(item: vscode.TestItem): Promise<void> {
+    if (!runProfileHandler) {
+        throw new Error('Run profile handler is not initialized.');
+    }
+
+    const tokenSource = new vscode.CancellationTokenSource();
+    try {
+        const request = new vscode.TestRunRequest([item]);
+        await runProfileHandler(request, tokenSource.token);
+    } finally {
+        tokenSource.dispose();
+    }
+}
+
+export async function debugTestItem(item: vscode.TestItem): Promise<void> {
+    if (!debugProfileHandler) {
+        throw new Error('Debug profile handler is not initialized.');
+    }
+
+    const tokenSource = new vscode.CancellationTokenSource();
+    try {
+        const request = new vscode.TestRunRequest([item]);
+        await debugProfileHandler(request, tokenSource.token);
+    } finally {
+        tokenSource.dispose();
+    }
 }

@@ -25,6 +25,7 @@ export interface DotnetTestOptions {
 export async function runDotnetTest(
     options: DotnetTestOptions,
     run: vscode.TestRun,
+    outputChannel: vscode.OutputChannel,
     token?: vscode.CancellationToken
 ): Promise<string | undefined> {
     const configuration = options.configuration || 'Debug';
@@ -46,13 +47,13 @@ export async function runDotnetTest(
         args.push('--filter', `"${options.filter}"`);
     }
 
-    // Stream output to test run
+    // Stream raw output to extension output channel (not Test Results pane)
     const onStdout = (line: string) => {
-        run.appendOutput(`${line}\r\n`);
+        outputChannel.append(`${line}\r\n`);
     };
 
     const onStderr = (line: string) => {
-        run.appendOutput(`${line}\r\n`);
+        outputChannel.append(`${line}\r\n`);
     };
 
     // Execute dotnet test

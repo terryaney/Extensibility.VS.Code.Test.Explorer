@@ -5,55 +5,53 @@ This checklist defines the manual validation steps required to verify the extens
 ## 1. Visual UX Checks
 **Goal:** Ensure the Test Explorer tree and UI elements match standard VS Code Testing conventions.
 
-- [ ] **Tree Hierarchy**
-    - [ ] Hierarchy is: `Project` -> `Namespace` (flat or nested) -> `Class` -> `Method`.
-    - [ ] `Facts` and `Theories` are displayed correctly.
-    - [ ] Theory data rows (if supported) appear as children of the Theory method.
-- [ ] **Icons & State**
-    - [ ] Tests start with "Unset" (hollow circle) state.
-    - [ ] "Running" spinner appears on parent and child nodes during execution.
-    - [ ] "Passed" (green tick), "Failed" (red cross), "Skipped" (yellow arrow) icons update correctly.
-- [ ] **Labels & Layout**
-    - [ ] Test names are human-readable (not fully qualified, unless resolving conflict).
-    - [ ] Execution duration is displayed next to tests after run.
-    - [ ] Long names truncate gracefully.
-- [ ] **Action Buttons**
-    - [ ] "Run Tests" (play icon) visible on hover for all nodes.
-    - [ ] "Debug Tests" (bug icon) visible on hover for all nodes.
-    - [ ] Global "Run All" and "Debug All" buttons in Test Explorer view title work.
+- [X] **Tree Hierarchy**
+    - [X] Hierarchy is: `Project` -> `Namespace` (flat or nested) -> `Class` -> `Method`.
+    - [X] `Facts` and `Theories` are displayed correctly.
+    - [X] Theory data rows (if supported) appear as children of the Theory method.
+- [X] **Icons & State**
+    - [X] Tests start with "Unset" (hollow circle) state.
+    - [X] "Running" spinner appears on parent and child nodes during execution.
+    - [X] "Passed" (green tick), "Failed" (red cross), "Skipped" (yellow arrow) icons update correctly.
+- [X] **Labels & Layout**
+    - [X] Test names are human-readable (not fully qualified, unless resolving conflict).
+    - [X] Execution duration is displayed next to tests after run.
+    - [X] Long names truncate gracefully.
+- [X] **Action Buttons**
+    - [X] "Run Tests" (play icon) visible on hover for all nodes.
+    - [X] "Debug Tests" (bug icon) visible on hover for all nodes.
+    - [X] Global "Run All" and "Debug All" buttons in Test Explorer view title work.
 
 ## 2. Functional Checks
 **Goal:** Verify core testing operations work reliably.
 
-- [ ] **Discovery**
-    - [ ] Tests are discovered immediately upon opening a folder with a valid `.sln` or `.csproj`.
-    - [ ] "Refresh Tests" button triggers a re-discovery.
-    - [ ] Adding a new test file/method and building updates the tree (or manual refresh updates it).
-- [ ] **Execution (Run)**
-    - [ ] **Run All:** Running root node executes all tests in workspace.
-    - [ ] **Run Project:** Running a project node executes only that project's tests.
-    - [ ] **Run Class:** Running a class node executes all methods in that class.
-    - [ ] **Run Single:** Running a single method executes only that method.
-    - [ ] **Run Selection:** Multi-selecting tests and clicking run executes the selection.
-- [ ] **Execution (Debug)**
-    - [ ] **Debug Single:** Clicking debug on a test hits a breakpoint inside that test.
-    - [ ] **Debug Class/Project:** Debugging a group hits breakpoints in any of the contained tests.
-    - [ ] Variables and Call Stack are inspectable during debug session.
-- [ ] **Stop/Cancel**
-    - [ ] Clicking "Stop" button in Test Explorer or Debug Toolbar terminates the run/debug session cleanly.
-    - [ ] Test states revert to previous or "unset" (depending on implementation policy) or stay as partial results.
+- [X] **Discovery**
+    - [X] Tests are discovered immediately upon opening a folder with a valid `.sln` or `.csproj`.
+    - [X] "Refresh Tests" button triggers a re-discovery.
+    - [X] Adding a new test file/method and building updates the tree (or manual refresh updates it).
+- [X] **Execution (Run)**
+    - [X] **Run All:** Running root node executes all tests in workspace.
+    - [X] **Run Project:** Running a project node executes only that project's tests.
+    - [X] **Run Class:** Running a class node executes all methods in that class.
+    - [X] **Run Single:** Running a single method executes only that method.
+    - [X] **Run Selection:** Multi-selecting tests and clicking run executes the selection.
+- [X] **Execution (Debug)**
+    - [X] **Debug Single:** Clicking debug on a test hits a breakpoint inside that test.
+    - [X] **Debug Class/Project:** Debugging a group hits breakpoints in any of the contained tests.
+    - [X] Variables and Call Stack are inspectable during debug session.
+- [X] **Stop/Cancel**
+    - [X] Clicking "Stop" button in Test Explorer or Debug Toolbar terminates the run/debug session cleanly.
+    - [X] Test states revert to previous or "unset" (depending on implementation policy) or stay as partial results.
 
 ## 3. Editor Integration Checks
 **Goal:** Ensure "Test at Cursor" and inline code lens/gutter experiences work.
 
-- [ ] **Gutter Decorations**
-    - [ ] Green/Red/Grey diamonds appear in the requested file line numbers (usually method signature).
-    - [ ] Clicking the gutter icon opens the context menu (Run/Debug).
-    - [ ] Status updates (spinners -> pass/fail) reflect in real-time in the editor gutter.
-- [ ] **Code Lenses (Optional for MVP, strictly Gutter is preferred in new VS Code API)**
-    - [ ] *If implemented:* "Run | Debug" text appears above `[Fact]` and `[Theory]` methods.
+- [X] **Gutter Decorations**
+    - [X] Green/Red/Grey diamonds appear in the requested file line numbers (usually method signature).
+    - [X] Clicking the gutter icon opens the context menu (Run/Debug).
+    - [X] Status updates (spinners -> pass/fail) reflect in real-time in the editor gutter.
 - [ ] **Inline Results**
-    - [ ] Failed tests show a "Peek Error" view or inline message in the editor.
+    - [X] Failed tests show a "Peek Error" view or inline message in the editor.
     - [ ] Stack trace links in the Test Results output are clickable and navigate to the crashing line.
 
 ## 4. Result Reporting & Output

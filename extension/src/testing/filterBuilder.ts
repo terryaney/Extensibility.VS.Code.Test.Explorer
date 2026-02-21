@@ -35,7 +35,14 @@ export function buildVSTestFilter(tests: vscode.TestItem[]): string {
         } else {
             // Leaf node (test method) - use exact match
             const fqn = encodeFilterValue(metadata.fullyQualifiedName);
-            filterParts.push(`FullyQualifiedName=${fqn}`);
+
+            if (metadata.kind === 'case') {
+                const displayName = metadata.displayName ?? item.label;
+                const encodedDisplayName = escapeVSTestFilterValue(displayName);
+                filterParts.push(`(FullyQualifiedName=${fqn}&DisplayName=${encodedDisplayName})`);
+            } else {
+                filterParts.push(`FullyQualifiedName=${fqn}`);
+            }
         }
     }
 
@@ -60,6 +67,18 @@ function encodeFilterValue(value: string): string {
     // For now, focus on commas which are common in generics
     
     return encoded;
+}
+
+function escapeVSTestFilterValue(value: string): string {
+    return value
+        .replace(/\\/g, '\\\\')
+        .replace(/\(/g, '\\(')
+        .replace(/\)/g, '\\)')
+        .replace(/\|/g, '\\|')
+        .replace(/&/g, '\\&')
+        .replace(/=/g, '\\=')
+        .replace(/!/g, '\\!')
+        .replace(/~/g, '\\~');
 }
 
 /**

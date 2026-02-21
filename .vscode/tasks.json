@@ -12,6 +12,33 @@
             "label": "npm: compile",
             "detail": "node esbuild.js",
             "problemMatcher": "$tsc"
+        },
+        {
+            "label": "build-worker",
+            "type": "shell",
+            "command": "powershell.exe",
+            "args": [
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}/extension/scripts/build-worker.ps1"
+            ],
+            "group": "build",
+            "presentation": {
+                "reveal": "silent",
+                "panel": "shared"
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "build: all",
+            "dependsOn": [
+                "npm: compile",
+                "build-worker"
+            ],
+            "dependsOrder": "parallel",
+            "group": "build",
+            "problemMatcher": []
         }
     ]
 }

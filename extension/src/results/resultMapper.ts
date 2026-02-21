@@ -1,7 +1,15 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { TrxTestResult } from './trxParser';
-import { testMetadata } from '../testing/testItemStore';
+import { getTestMetadata, isLeafRunnableItem } from '../testing/testItemStore';
+
+export interface TestRunSummary {
+    passed: number;
+    failed: number;
+    skipped: number;
+    total: number;
+    executionTimeMs: number;
+}
 
 /**
  * Applies TRX test results to VS Code TestItems and updates the TestRun.
@@ -15,15 +23,30 @@ export function applyTestResults(
     controller: vscode.TestController,
     results: TrxTestResult[],
     run: vscode.TestRun,
-    outputChannel: vscode.OutputChannel
-): void {
-    // Build a map of fully qualified names to test items for quick lookup
-    const testItemsByFqn = new Map<string, vscode.TestItem>();
-    buildTestItemMap(controller, testItemsByFqn);
+    outputChannel: vscode.OutputChannel,
+    expectedItems?: readonly vscode.TestItem[]
+): TestRunSummary {
+    // Build method and case maps for result matching
+    const methodItemsByFqn = new Map<string, vscode.TestItem>();
+    const caseItemsByFqnAndDisplayName = new Map<string, vscode.TestItem>();
+    buildTestItemMaps(controller, methodItemsByFqn, caseItemsByFqnAndDisplayName);
+
+    const itemStates = new Map<string, 'passed' | 'failed' | 'errored' | 'skipped'>();
+    const matchedItems = new Set<vscode.TestItem>();
+    const summary: TestRunSummary = {
+        passed: 0,
+        failed: 0,
+        skipped: 0,
+        total: 0,
+        executionTimeMs: 0
+    };
     
     // Apply each result
     for (const result of results) {
-        const testItem = testItemsByFqn.get(result.fullyQualifiedName);
+        const caseKey = buildCaseLookupKey(result.fullyQualifiedName, result.displayName);
+        const testItem =
+            caseItemsByFqnAndDisplayName.get(caseKey) ??
+            methodItemsByFqn.get(result.fullyQualifiedName);
         
         if (!testItem) {
             outputChannel.appendLine(
@@ -32,34 +55,122 @@ export function applyTestResults(
             continue;
         }
         
-        // Start the test if not already started
-        run.started(testItem);
-        
         // Apply outcome
         switch (result.outcome) {
             case 'Passed':
                 run.passed(testItem, result.duration);
+                itemStates.set(testItem.id, 'passed');
+                summary.passed++;
+                run.appendOutput(`✅ PASSED: ${result.testName} (${formatDuration(result.duration)})\r\n`);
+                if (result.stdOut) {
+                    run.appendOutput(result.stdOut, undefined, testItem);
+                }
                 break;
                 
             case 'Failed':
                 applyFailedResult(testItem, result, run);
+                itemStates.set(testItem.id, 'failed');
+                summary.failed++;
+                run.appendOutput(`❌ FAILED: ${result.testName} (${formatDuration(result.duration)})\r\n`);
+                if (result.stdOut) {
+                    run.appendOutput(result.stdOut, undefined, testItem);
+                }
                 break;
                 
             case 'Skipped':
                 run.skipped(testItem);
+                itemStates.set(testItem.id, 'skipped');
+                summary.skipped++;
+                run.appendOutput(`⏭️ SKIPPED: ${result.testName} (N/A)\r\n`);
                 break;
                 
             case 'NotExecuted':
                 run.skipped(testItem);
+                itemStates.set(testItem.id, 'skipped');
+                summary.skipped++;
+                run.appendOutput(`⏭️ SKIPPED: ${result.testName} (N/A)\r\n`);
                 break;
         }
-        
-        // Append stdout if present
-        if (result.stdOut) {
-            run.appendOutput(`\r\n--- Output from ${result.testName} ---\r\n`);
-            run.appendOutput(result.stdOut);
-            run.appendOutput('\r\n');
+
+        if (result.duration > 0) {
+            summary.executionTimeMs += result.duration;
         }
+
+        summary.total++;
+
+        matchedItems.add(testItem);
+    }
+
+    const missingSkippedCount = markMissingExpectedResultsAsSkipped(expectedItems, itemStates, matchedItems, run);
+    summary.skipped += missingSkippedCount;
+    summary.total += missingSkippedCount;
+
+    return summary;
+}
+
+function markMissingExpectedResultsAsSkipped(
+    expectedItems: readonly vscode.TestItem[] | undefined,
+    itemStates: Map<string, 'passed' | 'failed' | 'errored' | 'skipped'>,
+    matchedItems: Set<vscode.TestItem>,
+    run: vscode.TestRun
+): number {
+    if (!expectedItems || expectedItems.length === 0) {
+        return 0;
+    }
+
+    const expectedRunnableItems = new Map<string, vscode.TestItem>();
+    for (const item of expectedItems) {
+        collectRunnableItems(item, expectedRunnableItems);
+    }
+
+    let skippedCount = 0;
+
+    for (const item of expectedRunnableItems.values()) {
+        if (itemStates.has(item.id)) {
+            continue;
+        }
+
+        run.skipped(item);
+        itemStates.set(item.id, 'skipped');
+        matchedItems.add(item);
+        skippedCount++;
+    }
+
+    return skippedCount;
+}
+
+function formatDuration(ms: number | undefined): string {
+    if (!ms || ms <= 0) {
+        return 'N/A';
+    }
+
+    if (ms < 1000) {
+        return `${ms}ms`;
+    }
+
+    return `${(ms / 1000).toFixed(2)}s (${ms}ms)`;
+}
+
+function collectRunnableItems(
+    root: vscode.TestItem,
+    collected: Map<string, vscode.TestItem>
+): void {
+    const stack: vscode.TestItem[] = [root];
+
+    while (stack.length > 0) {
+        const current = stack.pop()!;
+        const metadata = getTestMetadata(current);
+        if (
+            (metadata?.kind === 'method' || metadata?.kind === 'case') &&
+            !(metadata?.kind === 'method' && current.children.size > 0) &&
+            isLeafRunnableItem(current)
+        ) {
+            collected.set(current.id, current);
+        }
+
+        current.children.forEach(child => {
+            stack.push(child);
+        });
     }
 }
 
@@ -132,38 +243,50 @@ function parseStackTraceLocation(stackTrace: string): { filePath: string; line: 
 }
 
 /**
- * Recursively builds a map of fully qualified names to test items.
+ * Recursively builds method and case lookup maps for test items.
  * 
  * @param controller The test controller
- * @param map Map to populate
+ * @param methodMap Method-level map to populate
+ * @param caseMap Case-level map to populate
  */
-function buildTestItemMap(
+function buildTestItemMaps(
     controller: vscode.TestController,
-    map: Map<string, vscode.TestItem>
+    methodMap: Map<string, vscode.TestItem>,
+    caseMap: Map<string, vscode.TestItem>
 ): void {
     controller.items.forEach(item => {
-        addTestItemToMap(item, map);
+        addTestItemToMaps(item, methodMap, caseMap);
     });
 }
 
 /**
- * Recursively adds a test item and its children to the map.
+ * Recursively adds a test item and its children to method/case maps.
  * 
  * @param item The test item
- * @param map Map to populate
+ * @param methodMap Method-level map to populate
+ * @param caseMap Case-level map to populate
  */
-function addTestItemToMap(
+function addTestItemToMaps(
     item: vscode.TestItem,
-    map: Map<string, vscode.TestItem>
+    methodMap: Map<string, vscode.TestItem>,
+    caseMap: Map<string, vscode.TestItem>
 ): void {
     // Get metadata for this item
-    const metadata = testMetadata.get(item);
+    const metadata = getTestMetadata(item);
     if (metadata && metadata.fullyQualifiedName) {
-        map.set(metadata.fullyQualifiedName, item);
+        if (metadata.kind === 'case' && metadata.displayName) {
+            caseMap.set(buildCaseLookupKey(metadata.fullyQualifiedName, metadata.displayName), item);
+        } else {
+            methodMap.set(metadata.fullyQualifiedName, item);
+        }
     }
     
     // Recursively process children
     item.children.forEach(child => {
-        addTestItemToMap(child, map);
+        addTestItemToMaps(child, methodMap, caseMap);
     });
+}
+
+function buildCaseLookupKey(fullyQualifiedName: string, displayName: string): string {
+    return `${fullyQualifiedName}||${displayName}`;
 }

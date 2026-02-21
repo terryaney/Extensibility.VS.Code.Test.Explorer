@@ -34,6 +34,34 @@ export function getTestMetadata(item: vscode.TestItem): TestMetadata | undefined
 }
 
 /**
+ * Determines whether a test item should receive run state updates.
+ * Leaf runnable items are theory cases and non-theory method leaves.
+ *
+ * @param item The test item
+ * @returns True when the item is a leaf runnable item
+ */
+export function isLeafRunnableItem(item: vscode.TestItem): boolean {
+    const metadata = getTestMetadata(item);
+    if (!metadata) {
+        return false;
+    }
+
+    if (metadata.kind === 'case') {
+        return true;
+    }
+
+    if (metadata.kind === 'method') {
+        if (item.children.size > 0) {
+            return false;
+        }
+
+        return metadata.isTheory !== true || item.children.size === 0;
+    }
+
+    return false;
+}
+
+/**
  * Sets the project path for a test item ID.
  * 
  * @param testId The test item ID

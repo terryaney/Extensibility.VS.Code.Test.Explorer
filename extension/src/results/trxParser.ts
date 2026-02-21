@@ -7,6 +7,7 @@ import { XMLParser } from 'fast-xml-parser';
 export interface TrxTestResult {
     testId: string;
     testName: string;
+    displayName: string;
     fullyQualifiedName: string;
     outcome: 'Passed' | 'Failed' | 'NotExecuted' | 'Skipped';
     duration: number; // milliseconds
@@ -82,6 +83,7 @@ export async function parseTrxFile(trxFilePath: string): Promise<TrxTestResult[]
     for (const unitTestResult of unitTestResults) {
         const testId = unitTestResult['@_testId'];
         const testName = unitTestResult['@_testName'];
+        const displayName = unitTestResult['@_testName'];
         const outcome = normalizeOutcome(unitTestResult['@_outcome']);
         const duration = parseDuration(unitTestResult['@_duration']);
         
@@ -110,6 +112,7 @@ export async function parseTrxFile(trxFilePath: string): Promise<TrxTestResult[]
         results.push({
             testId,
             testName,
+            displayName,
             fullyQualifiedName,
             outcome,
             duration,

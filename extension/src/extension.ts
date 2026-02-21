@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { createTestController, discoverAsync, clearTests } from './testing/controller';
+import { createTestController, discoverAsync, clearTests, runTestItem, debugTestItem } from './testing/controller';
 import { WorkerClient } from './worker/workerClient';
 import { logError, logInfo } from './logging/outputChannel';
 
@@ -24,6 +24,13 @@ export async function activate(context: vscode.ExtensionContext) {
     statusBarItem.tooltip = 'Click to show KAT C# Test Explorer output';
     context.subscriptions.push(statusBarItem);
 
+    const testCountStatusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, -1);
+    testCountStatusBar.command = 'test-explorer.showTestingView';
+    testCountStatusBar.tooltip = 'Show Tests';
+    testCountStatusBar.text = '$(beaker) Tests';
+    testCountStatusBar.show();
+    context.subscriptions.push(testCountStatusBar);
+
     // Start worker client
     const workerClient = new WorkerClient(context);
     workerClientInstance = workerClient;
@@ -41,7 +48,7 @@ export async function activate(context: vscode.ExtensionContext) {
     }
 
     // Create and register the test controller
-    const controller = createTestController(context, workerClient, outputChannel, statusBarItem);
+    const controller = createTestController(context, workerClient, outputChannel, statusBarItem, testCountStatusBar);
     testControllerInstance = controller;
     context.subscriptions.push(controller);
 
@@ -49,6 +56,46 @@ export async function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(
         vscode.commands.registerCommand('test-explorer.showOutput', () => {
             outputChannel.show();
+        })
+    );
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand('test-explorer.showTestingView', async () => {
+            await vscode.commands.executeCommand('workbench.view.testing.focus');
+        })
+    );
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand('test-explorer.runTestFromGutter', async (item?: vscode.TestItem) => {
+            if (!item) {
+                logInfo(outputChannel, 'Run from gutter command invoked without a test item');
+                return;
+            }
+
+            try {
+                await runTestItem(item);
+            } catch (error) {
+                logError(outputChannel, 'Run from gutter command failed', error instanceof Error ? error : undefined);
+                const errorMessage = error instanceof Error ? error.message : String(error);
+                vscode.window.showErrorMessage(`Failed to run test from gutter: ${errorMessage}`);
+            }
+        })
+    );
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand('test-explorer.debugTestFromGutter', async (item?: vscode.TestItem) => {
+            if (!item) {
+                logInfo(outputChannel, 'Debug from gutter command invoked without a test item');
+                return;
+            }
+
+            try {
+                await debugTestItem(item);
+            } catch (error) {
+                logError(outputChannel, 'Debug from gutter command failed', error instanceof Error ? error : undefined);
+                const errorMessage = error instanceof Error ? error.message : String(error);
+                vscode.window.showErrorMessage(`Failed to debug test from gutter: ${errorMessage}`);
+            }
         })
     );
 
@@ -89,8 +136,8 @@ export async function activate(context: vscode.ExtensionContext) {
                 logInfo(outputChannel, 'Worker process restarted successfully');
                 
                 // Clear and rediscover tests
-                clearTests(controller);
-                await discoverAsync(controller, newWorkerClient, outputChannel, statusBarItem);
+                clearTests(controller, testCountStatusBar);
+                await discoverAsync(controller, newWorkerClient, outputChannel, statusBarItem, testCountStatusBar);
             } catch (error) {
                 logError(outputChannel, 'Failed to restart worker process', error instanceof Error ? error : undefined);
                 const errorMessage = error instanceof Error ? error.message : String(error);
@@ -118,22 +165,22 @@ export async function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(
         vscode.commands.registerCommand('test-explorer.refreshTests', async () => {
             logInfo(outputChannel, 'Manual refresh requested');
-            clearTests(controller);
-            await discoverAsync(controller, workerClient, outputChannel, statusBarItem);
+            clearTests(controller, testCountStatusBar);
+            await discoverAsync(controller, workerClient, outputChannel, statusBarItem, testCountStatusBar);
         })
     );
 
     // Run initial discovery (projects only - full discovery happens via resolveHandler)
     logInfo(outputChannel, 'Running initial test discovery...');
-    await discoverAsync(controller, workerClient, outputChannel, statusBarItem);
+    await discoverAsync(controller, workerClient, outputChannel, statusBarItem, testCountStatusBar);
 
     const saveWatcher = vscode.workspace.onDidSaveTextDocument((doc) => {
         if (doc.languageId !== 'csharp') { return; }
         if (debounceTimer) { clearTimeout(debounceTimer); }
         debounceTimer = setTimeout(async () => {
             logInfo(outputChannel, 'File saved, refreshing tests...');
-            clearTests(controller);
-            await discoverAsync(controller, workerClient, outputChannel, statusBarItem);
+            clearTests(controller, testCountStatusBar);
+            await discoverAsync(controller, workerClient, outputChannel, statusBarItem, testCountStatusBar);
         }, 1500);
     });
     context.subscriptions.push(saveWatcher);

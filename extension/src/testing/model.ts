@@ -7,6 +7,9 @@ import * as vscode from 'vscode';
 export interface TestMetadata {
     fullyQualifiedName: string;
     projectPath: string;
+    kind?: 'method' | 'case';
+    displayName?: string;
+    isTheory?: boolean;
 }
 
 /**
