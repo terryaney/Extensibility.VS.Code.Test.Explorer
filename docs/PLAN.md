@@ -78,19 +78,95 @@ References:
 **What's needed:**
 
 - Add a new run profile: `controller.createRunProfile('Run with Coverage', vscode.TestRunProfileKind.Coverage, coverageHandler, false)`
-- Run `dotnet test --collect:"XPlat Code Coverage" --no-build` — requires the `coverlet.collector` NuGet package installed in each test project
-- Parse the generated Cobertura XML file (`coverage.cobertura.xml`) from the results directory
+- Run `dotnet test` with MSBuild coverage args — see **Coverage Package Decision** section below for the correct args
+- Parse the generated Cobertura XML file from the results directory
 - For each file: call `run.addCoverage(new vscode.FileCoverage(uri, statementCoverage))`
 - Optionally implement `profile.loadDetailedCoverage` to return `StatementCoverage[]` arrays for line-level gutter overlays
 - May require bumping `engines.vscode` in `package.json` from `^1.85.0` to `^1.88.0` (coverage API was added in 1.88)
 - The Coverage run profile being registered is what causes VS Code to automatically show the "Run with Coverage" button in the Testing pane toolbar
 
 **Risks:**
-- `coverlet.collector` must be installed in each test project — if missing, coverage silently produces no output
 - Multi-target projects produce one coverage file per TFM — need a merge or selection strategy
-- Coverage file location varies; scan results directory recursively for `*.cobertura.xml`
+- Coverage file location varies; scan results directory for `*.cobertura.xml` or `coverage.cobertura.xml`
 
 **Files to change:** `extension/src/testing/controller.ts` (new profile), new file `extension/src/testing/coverageHandler.ts`, new file `extension/src/results/coberturaParser.ts`, `extension/package.json` (engine bump)
+
+---
+
+### Coverage Package Decision & xunit.runner.visualstudio
+
+**Background — why the original plan said `coverlet.collector`:**
+
+The original design used `dotnet test --collect:"XPlat Code Coverage"`. That flag is a **VSTest data collector hook** — it instructs the VSTest host to activate a registered collector named `XPlat Code Coverage`, which is provided by the `coverlet.collector` NuGet package. If that package is missing from the test project, VSTest has nothing to activate and produces **no coverage file and no error** (silent failure). That is what the risk note was about.
+
+**Decision: remove `coverlet.collector`, use `coverlet.msbuild` instead.**
+
+`coverlet.msbuild` operates at the MSBuild layer, wrapping the entire `dotnet test` invocation. It is independent of the VSTest vs MTP runner underneath, making it more robust. This is already the approach used by all external tooling (tasks.json, TFS build utility, local output generation — see below). Standardizing on it eliminates the `coverlet.collector` silent-failure problem entirely.
+
+**Decision: keep `xunit.runner.visualstudio` for now.**
+
+`xunit.runner.visualstudio` is what keeps xunit.v3 projects running through VSTest mode. This extension is built on VSTest output (TRX parsing, `--filter` using VSTest filter syntax, `--logger trx`). Removing it would switch projects to Microsoft.Testing.Platform (MTP) mode, which uses a different execution protocol, different filter syntax, and different output format — requiring significant rework of the extension's run and result-parsing pipeline. Keep it until MTP support is a deliberate goal.
+
+**Per-project NuGet references (xunit.v3 test project):**
+
+```xml
+<PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.0.1"/>
+<PackageReference Include="xunit.v3" Version="3.2.0" />
+<!-- coverlet.collector REMOVED - was VSTest data collector, not needed with coverlet.msbuild -->
+<PackageReference Include="coverlet.msbuild" Version="6.0.4" PrivateAssets="all"
+    IncludeAssets="runtime; build; native; contentfiles; analyzers; buildtransitive" />
+<PackageReference Include="xunit.runner.visualstudio" Version="3.1.5" PrivateAssets="all"
+    IncludeAssets="runtime; build; native; contentfiles; analyzers; buildtransitive"/>
+```
+
+**How this affects each scenario:**
+
+**1. Project References**
+Remove `coverlet.collector`. Keep `coverlet.msbuild` and `xunit.runner.visualstudio`. No other changes.
+
+**2. Extension "Run with Coverage" — dotnet test args (coverageHandler.ts)**
+
+Replace `--collect:"XPlat Code Coverage"` with MSBuild properties:
+
+```
+dotnet test <project.csproj>
+  --logger trx;LogFileName=TestResults.trx
+  --results-directory <tempDir>
+  /p:CollectCoverage=true
+  /p:CoverletOutputFormat=cobertura
+  /p:CoverletOutput=<tempDir>/coverage.cobertura.xml
+```
+
+The Cobertura file will be at the path specified by `/p:CoverletOutput`. The coberturaParser should read from that explicit path rather than scanning for `*.cobertura.xml`.
+
+**3. Tasks.json (local test + report task)**
+
+The `test - execute` args already use `/p:CollectCoverage=true` — no changes needed there.
+
+The `test - open` step previously called `coverage-gutters.previewCoverageReport` (the Coverage Gutters VS Code extension command). Since Coverage Gutters is being removed, replace it with a shell command that opens the ReportGenerator HTML output directly:
+
+```jsonc
+{
+    "label": "test - open",
+    "hide": true,
+    "command": "cmd",
+    "type": "shell",
+    "args": ["/c", "start", "<path-to-TestResults>/CoverageReport/index.html"],
+    "problemMatcher": []
+}
+```
+
+**4. TFS Build Utility (runs on TFS Build Server)**
+
+No changes. Already uses `/p:CollectCoverage=true /p:CoverletOutputFormat=cobertura`. Removing `coverlet.collector` from project references has no effect on MSBuild-driven coverage.
+
+**5. Local Test/Generate Report Output Files**
+
+No changes. Same reasoning as #4 — already MSBuild-driven.
+
+**6. TFS Publish Steps**
+
+No changes. The TFS "Publish Code Coverage" step consumes a Cobertura XML file at a configured path. The file format and location do not change. The TFS "Publish Test Results" step consumes TRX files — also unchanged.
 
 ---
 
