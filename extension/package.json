@@ -10,7 +10,7 @@
   },
   "repository": {
     "type": "git",
-	"url": "https://github.com/terryaney/Extensibility.VS.Code.Test.Explorer"
+    "url": "https://github.com/terryaney/Extensibility.VS.Code.Test.Explorer"
   },
   "engines": {
     "vscode": "^1.85.0"
@@ -129,7 +129,7 @@
     "@typescript-eslint/eslint-plugin": "^6.13.0",
     "@typescript-eslint/parser": "^6.13.0",
     "@vscode/test-electron": "^2.3.8",
-    "@vscode/vsce": "^2.22.0",
+    "@vscode/vsce": "^3.7.1",
     "esbuild": "^0.27.3",
     "eslint": "^8.54.0",
     "typescript": "^5.3.3"
