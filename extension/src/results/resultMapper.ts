@@ -46,6 +46,7 @@ export function applyTestResults(
         const caseKey = buildCaseLookupKey(result.fullyQualifiedName, result.displayName);
         const testItem =
             caseItemsByFqnAndDisplayName.get(caseKey) ??
+            findCaseItemByTruncatedDisplayName(result.fullyQualifiedName, result.displayName, caseItemsByFqnAndDisplayName) ??
             methodItemsByFqn.get(result.fullyQualifiedName);
         
         if (!testItem) {
@@ -289,4 +290,36 @@ function addTestItemToMaps(
 
 function buildCaseLookupKey(fullyQualifiedName: string, displayName: string): string {
     return `${fullyQualifiedName}||${displayName}`;
+}
+
+/**
+ * Fallback case lookup for xUnit v2 VSTest truncation.
+ *
+ * The xUnit v2 VSTest adapter truncates theory display names in the TRX file,
+ * replacing the tail with ", ... }". Discovery (dotnet test -t) returns full names.
+ * When an exact key match fails and the TRX display name looks truncated, this
+ * strips the truncation marker and does a prefix search against the case map.
+ */
+function findCaseItemByTruncatedDisplayName(
+    fqn: string,
+    trxDisplayName: string,
+    caseMap: Map<string, vscode.TestItem>
+): vscode.TestItem | undefined {
+    // Only attempt when the name looks like it was truncated by xUnit v2 VSTest adapter.
+    // xUnit v2 uses U+00B7 MIDDLE DOT (·) as the truncation marker, producing ", ··· }"
+    if (!trxDisplayName || !/,\s*[\u00B7\.]{2,}\s*\}/.test(trxDisplayName)) {
+        return undefined;
+    }
+
+    // Strip the truncation suffix (", ··· }" or ", ... }") to get the stable prefix
+    const prefix = trxDisplayName.replace(/,\s*[\u00B7\.]{2,}\s*\}.*$/, '').trim();
+    const keyPrefix = `${fqn}||${prefix}`;
+
+    for (const [key, item] of caseMap) {
+        if (key.startsWith(keyPrefix)) {
+            return item;
+        }
+    }
+
+    return undefined;
 }

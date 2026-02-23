@@ -1,0 +1,26 @@
+<Solution>
+	<Folder Name="/Abstractions/">
+		<Project Path="../../Abstractions/Api.Contracts/DataLocker/src/Camelot.Abstractions.Api.Contracts.DataLocker.csproj" />
+		<Project Path="../../Abstractions/Api.Contracts/DataStore/src/Camelot.Abstractions.Api.Contracts.DataStore.csproj" />
+		<Project Path="../../Abstractions/Api.Contracts/RBLe/src/Camelot.Abstractions.Api.Contracts.RBLe.csproj" />
+		<Project Path="../../Abstractions/Api.Contracts/WebService.Proxy/src/Camelot.Abstractions.Api.Contracts.WebService.Proxy.csproj" />
+		<Project Path="../../Abstractions/Api.Contracts/xDS/src/Camelot.Abstractions.Api.Contracts.xDS.csproj" />
+		<Project Path="../../Abstractions/RBLe/Camelot.Abstractions.RBLe.csproj" />
+	</Folder>
+	<Folder Name="/Core/">
+		<Project Path="../../Core/Api/src/Camelot.Api.csproj" />
+		<Project Path="../../Core/Data/src/Camelot.Data.csproj" />
+		<Project Path="../../Core/DbContexts/Camelot/src/Camelot.DbContexts.Camelot.csproj" />
+		<Project Path="../../Core/DbContexts/Evolution/src/Camelot.DbContexts.Evolution.csproj" />
+		<Project Path="../../Core/DbContexts/[Core]/Camelot.DbContexts.Core.csproj" />
+		<Project Path="../../Core/Domain.Web/src/Camelot.Domain.Web.csproj" />
+		<Project Path="../../Core/Domain/src/Camelot.Domain.csproj" />
+		<Project Path="../../Core/Infrastructure.Web/src/Camelot.Infrastructure.Web.csproj" />
+		<Project Path="../../Core/Infrastructure/src/Camelot.Infrastructure.csproj" />
+		<Project Path="../../Core/Telemetry.Web/src/Camelot.Telemetry.Web.csproj" />
+		<Project Path="../../Core/Telemetry/src/Camelot.Telemetry.csproj" />
+		<Project Path="../../Core/Testing/Integration/src/Camelot.Testing.Integration.csproj" />
+	</Folder>
+	<Project Path="src/Camelot.Api.DataStore.csproj" />
+	<Project Path="tests/Integration/Camelot.Api.DataStore.Tests.Integration.csproj" />
+</Solution>
