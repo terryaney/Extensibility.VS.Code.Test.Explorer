@@ -97,15 +97,16 @@ The silent-failure risk with `coverlet.collector`: if it is referenced but the `
 {
     "label": "test - open",
     "hide": true,
-    "command": "cmd",
     "type": "shell",
+    "command": "start",
     "args": [
-        "/c", "start",
         "${workspaceFolder:Api.DataStore}/tests/Integration/TestResults/CoverageReport/index.html"
     ],
     "problemMatcher": []
 }
 ```
+
+> **Note:** Use the shell built-in `start` command directly (not `cmd /c start`) — VS Code's shell task type already runs inside cmd.exe on Windows, so `start` is available natively. Do not use `${command:...}` syntax here — that is for VS Code command IDs only, not shell commands.
 
 Also update `test - report` to explicitly request HTML:
 
