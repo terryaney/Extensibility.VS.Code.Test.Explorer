@@ -4,6 +4,10 @@
 
 Remove the dependency on the **Coverage Gutters** VS Code extension (`ryanluker.vscode-coverage-gutters`) from the local development workflow. In doing so, also clean up the NuGet package references in test projects by removing the now-unnecessary `coverlet.collector` package.
 
+## Status
+
+Completed. Coverage Gutters is no longer a required extension for the workflow, and `coverlet.collector` has been removed from all test project `.csproj` files. The `tasks.json` steps have been updated to open the ReportGenerator HTML report directly in the browser instead of using the Coverage Gutters command.
+
 ## Background
 
 Coverage Gutters is a VS Code extension that reads coverage report files from disk (lcov, Cobertura, etc.) and renders colored line highlights in the editor gutter. It is currently used in two ways:

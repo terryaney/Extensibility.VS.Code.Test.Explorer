@@ -147,7 +147,7 @@ export function buildTestTree(controller: vscode.TestController, projects: TestP
             // Process each class in this namespace
             for (const testClass of namespace.classes) {
                 const fullClassName = namespace.name ? `${namespace.name}.${testClass.name}` : testClass.name;
-                const classId = `${projectId}|${fullClassName}`;
+                const classId = `${projectId}|cls|${fullClassName}`;
                 
                 // Set uri and range for class if location is available
                 let classUri: vscode.Uri | undefined;

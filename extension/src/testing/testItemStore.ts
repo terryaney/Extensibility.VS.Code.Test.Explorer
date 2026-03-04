@@ -14,6 +14,24 @@ export const testMetadata = new WeakMap<vscode.TestItem, TestMetadata>();
 export const projectPaths = new Map<string, string>();
 
 /**
+ * Map of test item ID → parsed error location from the last failed run.
+ * Cleared when the item passes or is skipped; set when a stack trace parses successfully.
+ */
+export const errorLocations = new Map<string, { filePath: string; line: number }>();
+
+export function setErrorLocation(itemId: string, location: { filePath: string; line: number }): void {
+    errorLocations.set(itemId, location);
+}
+
+export function getErrorLocation(itemId: string): { filePath: string; line: number } | undefined {
+    return errorLocations.get(itemId);
+}
+
+export function clearErrorLocation(itemId: string): void {
+    errorLocations.delete(itemId);
+}
+
+/**
  * Sets metadata for a test item.
  * 
  * @param item The test item

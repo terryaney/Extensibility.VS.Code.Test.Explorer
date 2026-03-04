@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { TrxTestResult } from './trxParser';
-import { getTestMetadata, isLeafRunnableItem } from '../testing/testItemStore';
+import { clearErrorLocation, getTestMetadata, isLeafRunnableItem, setErrorLocation } from '../testing/testItemStore';
 
 export interface TestRunSummary {
     passed: number;
@@ -60,6 +60,7 @@ export function applyTestResults(
         switch (result.outcome) {
             case 'Passed':
                 run.passed(testItem, result.duration);
+                clearErrorLocation(testItem.id);
                 itemStates.set(testItem.id, 'passed');
                 summary.passed++;
                 run.appendOutput(`✅ PASSED: ${result.testName} (${formatDuration(result.duration)})\r\n`);
@@ -80,6 +81,7 @@ export function applyTestResults(
                 
             case 'Skipped':
                 run.skipped(testItem);
+                clearErrorLocation(testItem.id);
                 itemStates.set(testItem.id, 'skipped');
                 summary.skipped++;
                 run.appendOutput(`⏭️ SKIPPED: ${result.testName} (N/A)\r\n`);
@@ -87,6 +89,7 @@ export function applyTestResults(
                 
             case 'NotExecuted':
                 run.skipped(testItem);
+                clearErrorLocation(testItem.id);
                 itemStates.set(testItem.id, 'skipped');
                 summary.skipped++;
                 run.appendOutput(`⏭️ SKIPPED: ${result.testName} (N/A)\r\n`);
@@ -192,19 +195,26 @@ function applyFailedResult(
     
     // Create TestMessage
     const testMessage = new vscode.TestMessage(message);
+
+    if (testItem.uri) {
+        testMessage.location = new vscode.Location(
+            testItem.uri,
+            testItem.range ?? new vscode.Position(0, 0)
+        );
+    }
     
-    // Parse stack trace to extract location
     if (result.errorStackTrace) {
-        const location = parseStackTraceLocation(result.errorStackTrace);
-        if (location) {
-            testMessage.location = new vscode.Location(
-                vscode.Uri.file(location.filePath),
-                new vscode.Position(location.line - 1, 0) // Convert to 0-based
-            );
-        }
-        
         // Include full stack trace in the message
         testMessage.message = `${message}\n\nStack Trace:\n${result.errorStackTrace}`;
+
+        const errorLocation = parseStackTraceLocation(result.errorStackTrace);
+        if (errorLocation) {
+            setErrorLocation(testItem.id, errorLocation);
+        } else {
+            clearErrorLocation(testItem.id);
+        }
+    } else {
+        clearErrorLocation(testItem.id);
     }
     
     // Mark test as failed

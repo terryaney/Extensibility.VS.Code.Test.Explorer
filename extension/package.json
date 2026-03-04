@@ -66,6 +66,12 @@
         "command": "test-explorer.showLoadError",
         "title": "Show Project Load Error Details",
         "category": "KAT C# Test Explorer"
+      },
+      {
+        "command": "test-explorer.goToTest",
+        "title": "Go To Test",
+        "category": "KAT C# Test Explorer",
+        "icon": "$(go-to-file)"
       }
     ],
     "menus": {
@@ -96,6 +102,11 @@
         {
           "command": "test-explorer.showLoadError",
           "when": "testId =~ /diagnostic:load-error/",
+          "group": "inline"
+        },
+        {
+          "command": "test-explorer.goToTest",
+          "when": "testId =~ /\\|(method|case)\\|/",
           "group": "inline"
         }
       ],

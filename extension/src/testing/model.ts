@@ -57,5 +57,5 @@ export function getTestLabel(item: vscode.TestItem): string {
  * @returns A stable test ID
  */
 export function getTestId(projectPath: string, fullyQualifiedName: string): string {
-    return `${projectPath}|${fullyQualifiedName}`;
+    return `${projectPath}|method|${fullyQualifiedName}`;
 }

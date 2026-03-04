@@ -170,6 +170,27 @@ export async function activate(context: vscode.ExtensionContext) {
         })
     );
 
+    context.subscriptions.push(
+        vscode.commands.registerCommand('test-explorer.goToTest', async (item?: vscode.TestItem) => {
+            if (!item?.uri) {
+                return;
+            }
+
+            try {
+                const position = item.range
+                    ? item.range.start
+                    : new vscode.Position(0, 0);
+                await vscode.window.showTextDocument(item.uri, {
+                    selection: new vscode.Range(position, position),
+                    preserveFocus: false
+                });
+            } catch (error) {
+                logError(outputChannel, 'Go To Test command failed', error instanceof Error ? error : undefined);
+                vscode.window.showErrorMessage(`Failed to navigate to test: ${item.uri.fsPath}`);
+            }
+        })
+    );
+
     // Run initial discovery (projects only - full discovery happens via resolveHandler)
     logInfo(outputChannel, 'Running initial test discovery...');
     await discoverAsync(controller, workerClient, outputChannel, statusBarItem, testCountStatusBar);
