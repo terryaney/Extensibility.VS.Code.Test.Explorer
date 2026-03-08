@@ -12,6 +12,8 @@ export interface DotnetTestOptions {
     resultsDirectory: string;
     logFilePrefix: string;
     configuration?: string;
+    /** Additional MSBuild properties to pass as /p:Key=Value arguments */
+    msBuildProperties?: Record<string, string>;
 }
 
 /**
@@ -45,6 +47,14 @@ export async function runDotnetTest(
     // Add filter if specified
     if (options.filter) {
         args.push('--filter', `"${options.filter}"`);
+    }
+
+    // Add MSBuild properties if specified
+    if (options.msBuildProperties) {
+        for (const [key, value] of Object.entries(options.msBuildProperties)) {
+            // Quote the value to handle paths with spaces (shell: true is used by spawnProcess)
+            args.push(`/p:${key}="${value}"`);
+        }
     }
 
     // Stream raw output to extension output channel (not Test Results pane)

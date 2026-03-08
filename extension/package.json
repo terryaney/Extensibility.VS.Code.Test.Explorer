@@ -13,7 +13,7 @@
     "url": "https://github.com/terryaney/Extensibility.VS.Code.Test.Explorer"
   },
   "engines": {
-    "vscode": "^1.85.0"
+    "vscode": "^1.88.0"
   },
   "icon": "images/logo.png",
   "categories": [
@@ -27,6 +27,12 @@
   "contributes": {
     "testing": {},
     "commands": [
+      {
+        "command": "test-explorer.restoreLastCoverage",
+        "title": "Restore Last Coverage",
+        "category": "KAT C# Test Explorer",
+        "icon": "$(color-mode)"
+      },
       {
         "command": "test-explorer.refreshTests",
         "title": "Refresh Tests",
@@ -77,6 +83,11 @@
     "menus": {
       "view/title": [
         {
+          "command": "test-explorer.restoreLastCoverage",
+          "when": "view == workbench.view.testing && test-explorer.hasCachedCoverage",
+          "group": "navigation"
+        },
+        {
           "command": "test-explorer.refreshTests",
           "when": "view == workbench.view.testing",
           "group": "navigation"
@@ -126,7 +137,7 @@
     "ms-dotnettools.csharp"
   ],
   "scripts": {
-    "build-worker": "powershell -ExecutionPolicy Bypass -File ./scripts/build-worker.ps1",
+    "build-worker": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/build-worker.ps1",
     "vscode:prepublish": "npm run build-worker && node esbuild.js --production",
     "compile": "node esbuild.js",
     "watch": "node esbuild.js --watch",
@@ -137,7 +148,7 @@
   "devDependencies": {
     "@types/node": "^20.10.0",
     "@types/uuid": "^11.0.0",
-    "@types/vscode": "^1.85.0",
+    "@types/vscode": "^1.88.0",
     "@typescript-eslint/eslint-plugin": "^6.13.0",
     "@typescript-eslint/parser": "^6.13.0",
     "@vscode/test-electron": "^2.3.8",

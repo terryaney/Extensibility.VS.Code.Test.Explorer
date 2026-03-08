@@ -5,6 +5,8 @@ import { TestProjectDto } from '../worker/protocol';
 import { WorkerClient } from '../worker/workerClient';
 import { createRunHandler } from './runHandler';
 import { createDebugHandler } from './debugHandler';
+import { createCoverageHandler } from './coverageHandler';
+import { CoverageCache } from './coverageCache';
 import { logError, logInfo } from '../logging/outputChannel';
 
 let runProfileHandler: ((request: vscode.TestRunRequest, token: vscode.CancellationToken) => Promise<void>) | undefined;
@@ -444,6 +446,52 @@ export function createTestController(
         vscode.TestRunProfileKind.Debug,
         debugHandler,
         false // isDefault
+    );
+
+    // Create Run with Coverage profile (VS Code 1.88+)
+    const coverageRunDetails = new WeakMap<vscode.TestRun, Map<string, vscode.FileCoverageDetail[]>>();
+    const coverageCache = new CoverageCache();
+    context.subscriptions.push(coverageCache);
+
+    const coverageHandler = createCoverageHandler(controller, outputChannel, coverageRunDetails, coverageCache);
+    const coverageProfile = controller.createRunProfile(
+        'Run with Coverage',
+        vscode.TestRunProfileKind.Coverage,
+        coverageHandler,
+        false // isDefault
+    );
+
+    const loadDetailedCoverage = async (testRun: vscode.TestRun, fileCoverage: vscode.FileCoverage, _token: vscode.CancellationToken): Promise<vscode.FileCoverageDetail[]> => {
+        if (coverageCache.isStale(fileCoverage.uri)) {
+            const fileName = fileCoverage.uri.fsPath.split(/[\\/]/).pop() ?? fileCoverage.uri.fsPath;
+            void vscode.window.showWarningMessage(
+                `Coverage may be inaccurate: ${fileName} has changed since the last run.`
+            );
+        }
+        return coverageRunDetails.get(testRun)?.get(fileCoverage.uri.toString()) ?? [];
+    };
+    coverageProfile.loadDetailedCoverage = loadDetailedCoverage;
+
+    // Restore Last Coverage command — replays cached data into a new TestRun without re-running tests.
+    context.subscriptions.push(
+        vscode.commands.registerCommand('test-explorer.restoreLastCoverage', () => {
+            const entries = coverageCache.entries;
+            if (entries.length === 0) {
+                void vscode.window.showInformationMessage('No cached coverage data. Run with coverage first.');
+                return;
+            }
+
+            const request = new vscode.TestRunRequest(undefined, undefined, coverageProfile);
+            const run = controller.createTestRun(request, 'Coverage (restored)', false);
+
+            const detailMap = new Map<string, vscode.FileCoverageDetail[]>();
+            for (const fc of entries) {
+                detailMap.set(fc.uri.toString(), fc.details);
+                run.addCoverage(new vscode.FileCoverage(fc.uri, fc.statementCoverage, fc.branchCoverage));
+            }
+            coverageRunDetails.set(run, detailMap);
+            run.end();
+        })
     );
 
     return controller;
