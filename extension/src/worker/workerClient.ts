@@ -209,6 +209,19 @@ export class WorkerClient {
     }
 
     /**
+     * Discover tests incrementally for a single changed file
+     */
+    async discoverFile(filePath: string, abortSignal?: AbortSignal): Promise<import('./protocol').DiscoverFileResponse> {
+        const request: import('./protocol').DiscoverFileRequest = {
+            id: this.generateRequestId(),
+            type: 'discover-file',
+            filePath
+        };
+
+        return await this.request<import('./protocol').DiscoverFileResponse>(request, abortSignal);
+    }
+
+    /**
      * Generate a unique request ID
      */
     private generateRequestId(): string {

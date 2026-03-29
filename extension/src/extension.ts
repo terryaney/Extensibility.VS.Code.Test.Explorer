@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { createTestController, discoverAsync, clearTests, runTestItem, debugTestItem } from './testing/controller';
+import { createTestController, discoverAsync, clearTests, buildTestTree, mergeProjectResults, mergeFileResults, countLeafTestItems, runTestItem, debugTestItem } from './testing/controller';
 import { WorkerClient } from './worker/workerClient';
 import { logError, logInfo } from './logging/outputChannel';
 
@@ -199,9 +199,28 @@ export async function activate(context: vscode.ExtensionContext) {
         if (doc.languageId !== 'csharp') { return; }
         if (debounceTimer) { clearTimeout(debounceTimer); }
         debounceTimer = setTimeout(async () => {
-            logInfo(outputChannel, 'File saved, refreshing tests...');
-            clearTests(controller, testCountStatusBar);
-            await discoverAsync(controller, workerClient, outputChannel, statusBarItem, testCountStatusBar);
+            const filePath = doc.uri.fsPath;
+            logInfo(outputChannel, `File saved, discovering changes: ${filePath}`);
+            try {
+                const result = await workerClient.discoverFile(filePath);
+                if (result.scope === 'skipped') {
+                    logInfo(outputChannel, 'File is not in a test project, skipping discovery');
+                    return;
+                }
+                if (result.project) {
+                    if (result.scope === 'file') {
+                        mergeFileResults(controller, result.project, filePath, result.removedTestIds);
+                    } else {
+                        mergeProjectResults(controller, result.project);
+                    }
+                }
+                const count = countLeafTestItems(controller);
+                testCountStatusBar.text = count > 0 ? `$(beaker) ${count} Tests` : '$(beaker) Tests';
+                logInfo(outputChannel, `Incremental discovery complete (scope: ${result.scope})`);
+            } catch (error) {
+                logError(outputChannel, 'Incremental discovery failed, falling back to full discovery', error instanceof Error ? error : undefined);
+                await discoverAsync(controller, workerClient, outputChannel, statusBarItem, testCountStatusBar);
+            }
         }, 1500);
     });
     context.subscriptions.push(saveWatcher);

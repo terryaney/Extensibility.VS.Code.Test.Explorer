@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { TestMetadata, TestLocation, getTestId } from './model';
 import { setTestMetadata, setProjectPath, getTestMetadata as getMetadata } from './testItemStore';
-import { TestProjectDto } from '../worker/protocol';
+import { TestProjectDto, DiscoverFileResponse } from '../worker/protocol';
 import { WorkerClient } from '../worker/workerClient';
 import { createRunHandler } from './runHandler';
 import { createDebugHandler } from './debugHandler';
@@ -100,10 +100,13 @@ export function addDiagnosticNode(
  * @param controller The test controller
  * @param projects Array of discovered test projects from discovery response
  */
-export function buildTestTree(controller: vscode.TestController, projects: TestProjectDto[]): void {
+export function buildTestTree(controller: vscode.TestController, projects: TestProjectDto[], pruneRootLevel: boolean = true): void {
+    const seenProjectIds = new Set<string>();
+
     for (const project of projects) {
         // Get or create project node
         const projectId = project.projectPath;
+        seenProjectIds.add(projectId);
 		const displayName = project.targetFramework?.trim() 
 			? `${project.name} (${project.targetFramework})` 
 			: project.name;
@@ -130,13 +133,17 @@ export function buildTestTree(controller: vscode.TestController, projects: TestP
             );
             diagnosticItem.canResolveChildren = false;
             diagnosticItem.description = 'Add test methods with [Fact] or [Theory] attributes';
+            pruneStaleChildren(projectItem, new Set([diagnosticId]));
             projectItem.children.add(diagnosticItem);
             continue;
         }
         
+        const seenNamespaceIds = new Set<string>();
+
         // Process each namespace
         for (const namespace of project.namespaces) {
             const namespaceId = `${projectId}|ns|${namespace.name}`;
+            seenNamespaceIds.add(namespaceId);
             const namespaceItem = createOrGetTestItem(
                 controller,
                 projectItem,
@@ -146,10 +153,13 @@ export function buildTestTree(controller: vscode.TestController, projects: TestP
             setProjectPath(namespaceId, project.projectPath);
             const currentParent = namespaceItem;
             
+            const seenClassIds = new Set<string>();
+
             // Process each class in this namespace
             for (const testClass of namespace.classes) {
                 const fullClassName = namespace.name ? `${namespace.name}.${testClass.name}` : testClass.name;
                 const classId = `${projectId}|cls|${fullClassName}`;
+                seenClassIds.add(classId);
                 
                 // Set uri and range for class if location is available
                 let classUri: vscode.Uri | undefined;
@@ -174,9 +184,12 @@ export function buildTestTree(controller: vscode.TestController, projects: TestP
                 
                 setProjectPath(classId, project.projectPath);
                 
+                const seenMethodIds = new Set<string>();
+
                 // Process each method in this class
                 for (const method of testClass.methods) {
                     const methodId = getTestId(project.projectPath, method.fullyQualifiedName);
+                    seenMethodIds.add(methodId);
                     
                     // Set uri and range for method
                     const methodUri = vscode.Uri.file(method.location.filePath);
@@ -210,9 +223,11 @@ export function buildTestTree(controller: vscode.TestController, projects: TestP
                     if (method.isTheory && method.cases && method.cases.length > 0) {
                         methodItem.canResolveChildren = true;
 
+                        const seenCaseIds = new Set<string>();
                         for (const testCase of method.cases) {
                             const caseKey = hashDisplayName(testCase.displayName);
                             const caseId = `${project.projectPath}|${method.fullyQualifiedName}|case|${caseKey}`;
+                            seenCaseIds.add(caseId);
                             const caseItem = createOrGetTestItem(
                                 controller,
                                 methodItem,
@@ -232,20 +247,103 @@ export function buildTestTree(controller: vscode.TestController, projects: TestP
                             });
                             setProjectPath(caseId, project.projectPath);
                         }
+                        pruneStaleChildren(methodItem, seenCaseIds);
+                    } else {
+                        // Not a theory or no cases — clear any stale case children
+                        methodItem.canResolveChildren = false;
+                        pruneStaleChildren(methodItem, new Set<string>());
                     }
                 }
+
+                pruneStaleChildren(classItem, seenMethodIds);
                 
                 // Sort methods in class
                 sortTestItems(classItem);
             }
+
+            pruneStaleChildren(currentParent, seenClassIds);
             
             // Sort classes in namespace
             sortTestItems(currentParent);
         }
+
+        pruneStaleChildren(projectItem, seenNamespaceIds);
         
         // Sort namespaces in project
         sortTestItems(projectItem);
     }
+
+    // Remove projects that are no longer in the discovery results (only during full discovery)
+    if (pruneRootLevel) {
+        pruneStaleChildren(controller, seenProjectIds);
+    }
+}
+
+/**
+ * Merges results for a single project into the test tree.
+ * Used for project-scoped incremental updates.
+ */
+export function mergeProjectResults(controller: vscode.TestController, project: TestProjectDto): void {
+    buildTestTree(controller, [project], false);
+}
+
+/**
+ * Merges file-scoped discovery results into the test tree.
+ * Only updates tests from the specified file, leaving all other tests untouched.
+ */
+export function mergeFileResults(
+    controller: vscode.TestController,
+    project: TestProjectDto,
+    changedFilePath: string,
+    removedTestIds?: string[]
+): void {
+    // Remove explicitly deleted tests
+    if (removedTestIds) {
+        for (const testId of removedTestIds) {
+            removeTestItemById(controller, testId);
+        }
+    }
+
+    // Rebuild the project node from the response (which contains only the changed file's tests
+    // merged with existing project data from the worker)
+    buildTestTree(controller, [project], false);
+}
+
+/**
+ * Removes stale children from a parent that were not seen in the current discovery.
+ */
+function pruneStaleChildren(parent: vscode.TestItem | vscode.TestController, seenIds: Set<string>): void {
+    const collection = 'children' in parent ? parent.children : parent.items;
+    const staleIds: string[] = [];
+    collection.forEach(item => {
+        if (!seenIds.has(item.id)) {
+            staleIds.push(item.id);
+        }
+    });
+    for (const id of staleIds) {
+        collection.delete(id);
+    }
+}
+
+/**
+ * Removes a test item by its ID from anywhere in the tree.
+ */
+function removeTestItemById(controller: vscode.TestController, testId: string): void {
+    // Walk the tree to find and remove the item
+    const visit = (collection: vscode.TestItemCollection): boolean => {
+        if (collection.get(testId)) {
+            collection.delete(testId);
+            return true;
+        }
+        let found = false;
+        collection.forEach(item => {
+            if (!found) {
+                found = visit(item.children);
+            }
+        });
+        return found;
+    };
+    visit(controller.items);
 }
 
 /**
@@ -289,7 +387,7 @@ export function clearTests(controller: vscode.TestController, testCountStatusBar
     testCountStatusBar.show();
 }
 
-function countLeafTestItems(controller: vscode.TestController): number {
+export function countLeafTestItems(controller: vscode.TestController): number {
     let count = 0;
 
     const visit = (item: vscode.TestItem): void => {

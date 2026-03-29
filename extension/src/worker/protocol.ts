@@ -28,6 +28,11 @@ export interface DiscoverRequest extends BaseRequest {
     workspaceFolders: string[];
 }
 
+export interface DiscoverFileRequest extends BaseRequest {
+    type: 'discover-file';
+    filePath: string;
+}
+
 export interface TestLocation {
     filePath: string;
     startLine: number;
@@ -71,4 +76,10 @@ export interface TestProjectDto {
 
 export interface DiscoverResponse extends BaseResponse {
     projects: TestProjectDto[];
+}
+
+export interface DiscoverFileResponse extends BaseResponse {
+    scope: 'file' | 'project' | 'skipped';
+    project?: TestProjectDto;
+    removedTestIds?: string[];
 }

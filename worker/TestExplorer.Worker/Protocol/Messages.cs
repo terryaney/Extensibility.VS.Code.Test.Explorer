@@ -19,3 +19,12 @@ public record DiscoverResponse(string Id, bool Success, string? Error = null) : 
 {
     public TestProjectDto[] Projects { get; init; } = Array.Empty<TestProjectDto>();
 }
+
+public record DiscoverFileRequest(string Id, string Type, string FilePath) : BaseRequest(Id, Type);
+
+public record DiscoverFileResponse(string Id, bool Success, string? Error = null) : BaseResponse(Id, Success, Error)
+{
+    public string Scope { get; init; } = "skipped";
+    public TestProjectDto? Project { get; init; }
+    public string[]? RemovedTestIds { get; init; }
+}

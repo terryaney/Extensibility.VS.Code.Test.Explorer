@@ -21,6 +21,8 @@ namespace TestExplorer.Worker
             WriteIndented = false
         };
 
+        private static readonly DiscoveryCache _cache = new();
+
         static async Task Main(string[] args)
         {
             Console.Error.WriteLine("TestExplorer.Worker starting...");
@@ -62,6 +64,7 @@ namespace TestExplorer.Worker
             {
                 "ping" => new PingResponse(id, true, null) { Version = "0.1.0" },
                 "discover" => await HandleDiscoverRequestAsync(jsonNode),
+                "discover-file" => await HandleDiscoverFileRequestAsync(jsonNode),
                 _ => new BaseResponse(id, false, $"Unknown request type: {type}")
             };
 
@@ -85,6 +88,9 @@ namespace TestExplorer.Worker
 
                 Console.Error.WriteLine($"Discovering projects in {workspaceFolders.Length} workspace folder(s)...");
 
+                // Clear cache before full rediscovery
+                _cache.Clear();
+
                 // Register MSBuild
                 WorkspaceLoader.RegisterMSBuild();
 
@@ -103,13 +109,22 @@ namespace TestExplorer.Worker
                         try
                         {
                             var project = await loader.LoadProjectAsync(projectPath);
-                            if (locator.IsTestProject(project))
+                            var isTest = locator.IsTestProject(project);
+
+                            // Cache compilation for all projects (needed for file→project mapping)
+                            var compilation = await project.GetCompilationAsync();
+                            if (compilation != null)
+                            {
+                                _cache.CacheProject(project, compilation, isTest);
+                            }
+
+                            if (isTest)
                             {
                                 Console.Error.WriteLine($"  ✓ Test project: {projectPath}");
                                 
                                 // Discover tests in this project
-                                var discovery = new XunitDiscovery();
-                                var discoveredTests = await XunitDiscovery.DiscoverTestsAsync( project);
+                                var discoveredTests = await XunitDiscovery.DiscoverTestsAsync(project);
+                                _cache.CacheDiscoveredTests(projectPath, discoveredTests);
 
                                 Dictionary<string, List<TestCaseDto>>? theoryCasesByMethod = null;
                                 var theoryListingAvailable = false;
@@ -147,7 +162,7 @@ namespace TestExplorer.Worker
                     }
                 }
 
-                Console.Error.WriteLine($"Discovery complete: {testProjects.Count} test project(s) found.");
+                Console.Error.WriteLine($"Discovery complete: {testProjects.Count} test project(s) found. Cache populated.");
 
                 return new DiscoverResponse(id, true, null) 
                 { 
@@ -159,6 +174,256 @@ namespace TestExplorer.Worker
                 Console.Error.WriteLine($"Discovery failed: {ex.Message}");
                 return new DiscoverResponse(id, false, ex.Message);
             }
+        }
+
+        private static async Task<DiscoverFileResponse> HandleDiscoverFileRequestAsync(JsonNode requestNode)
+        {
+            var id = requestNode["id"]?.GetValue<string>() ?? "unknown";
+
+            try
+            {
+                var filePath = requestNode["filePath"]?.GetValue<string>();
+                if (string.IsNullOrWhiteSpace(filePath))
+                {
+                    return new DiscoverFileResponse(id, false, "filePath is required");
+                }
+
+                Console.Error.WriteLine($"Incremental discovery for: {filePath}");
+
+                // If cache has no data, we haven't done a full discovery yet — fall back
+                if (!_cache.HasData)
+                {
+                    Console.Error.WriteLine("  No cached data, returning skipped (full discovery needed first)");
+                    return new DiscoverFileResponse(id, true) { Scope = "skipped" };
+                }
+
+                // Map file to project
+                if (!_cache.TryGetProjectPath(filePath, out var projectPath))
+                {
+                    Console.Error.WriteLine($"  File not mapped to any project, skipping");
+                    return new DiscoverFileResponse(id, true) { Scope = "skipped" };
+                }
+
+                // Check if this is a test project
+                if (!_cache.IsTestProject(projectPath))
+                {
+                    Console.Error.WriteLine($"  File belongs to non-test project: {projectPath}, skipping");
+                    return new DiscoverFileResponse(id, true) { Scope = "skipped" };
+                }
+
+                // Read the updated file content and update the compilation
+                if (!File.Exists(filePath))
+                {
+                    Console.Error.WriteLine($"  File not found on disk: {filePath}");
+                    return new DiscoverFileResponse(id, true) { Scope = "skipped" };
+                }
+
+                var newContent = await File.ReadAllTextAsync(filePath);
+                var updatedCompilation = _cache.UpdateFile(filePath, newContent);
+
+                if (updatedCompilation == null)
+                {
+                    Console.Error.WriteLine($"  Failed to update compilation, skipping");
+                    return new DiscoverFileResponse(id, true) { Scope = "skipped" };
+                }
+
+                var newTree = _cache.GetSyntaxTree(filePath);
+                if (newTree == null)
+                {
+                    Console.Error.WriteLine($"  No syntax tree after update, skipping");
+                    return new DiscoverFileResponse(id, true) { Scope = "skipped" };
+                }
+
+                // Check if the file contains a base class for test classes → escalate to project scope
+                var isBaseClass = XunitDiscovery.ContainsTestBaseClass(newTree, updatedCompilation);
+
+                if (isBaseClass)
+                {
+                    Console.Error.WriteLine($"  File contains base class for test classes, escalating to project scope");
+                    return await DiscoverFullProjectAsync(id, projectPath, updatedCompilation);
+                }
+
+                // File-scoped discovery: scan only this file
+                var fileTests = XunitDiscovery.DiscoverTestsInFile(newTree, updatedCompilation, projectPath);
+                Console.Error.WriteLine($"  Found {fileTests.Count} test(s) in file (file-scoped)");
+
+                // Compute removed test IDs by comparing with previous tests from this file
+                var removedTestIds = ComputeRemovedTestIds(projectPath, filePath, fileTests);
+
+                // Merge file tests with existing project tests (from other files)
+                var mergedTests = MergeFileTestsWithCached(projectPath, filePath, fileTests);
+                _cache.CacheDiscoveredTests(projectPath, mergedTests);
+
+                // Build DTO with theory cases if needed
+                Dictionary<string, List<TestCaseDto>>? theoryCasesByMethod = null;
+                var theoryListingAvailable = false;
+
+                if (fileTests.Any(t => t.IsTheory))
+                {
+                    (theoryListingAvailable, theoryCasesByMethod) = await TryListTheoryCasesAsync(projectPath, mergedTests);
+                }
+
+                var projectDto = BuildProjectDtoFromTests(projectPath, mergedTests, theoryListingAvailable, theoryCasesByMethod, updatedCompilation);
+
+                return new DiscoverFileResponse(id, true)
+                {
+                    Scope = "file",
+                    Project = projectDto,
+                    RemovedTestIds = removedTestIds.Length > 0 ? removedTestIds : null
+                };
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"Incremental discovery failed: {ex.Message}");
+                return new DiscoverFileResponse(id, false, ex.Message);
+            }
+        }
+
+        private static async Task<DiscoverFileResponse> DiscoverFullProjectAsync(
+            string requestId, string projectPath, Compilation compilation)
+        {
+            // Re-discover all tests in the project using the updated compilation
+            var allTests = new List<DiscoveredTest>();
+            foreach (var syntaxTree in compilation.SyntaxTrees)
+            {
+                var tests = XunitDiscovery.DiscoverTestsInFile(syntaxTree, compilation, projectPath);
+                allTests.AddRange(tests);
+            }
+
+            Console.Error.WriteLine($"  Found {allTests.Count} test(s) in project (project-scoped)");
+            _cache.CacheDiscoveredTests(projectPath, allTests);
+
+            Dictionary<string, List<TestCaseDto>>? theoryCasesByMethod = null;
+            var theoryListingAvailable = false;
+
+            if (allTests.Any(t => t.IsTheory))
+            {
+                (theoryListingAvailable, theoryCasesByMethod) = await TryListTheoryCasesAsync(projectPath, allTests);
+            }
+
+            var projectDto = BuildProjectDtoFromTests(projectPath, allTests, theoryListingAvailable, theoryCasesByMethod, compilation);
+
+            return new DiscoverFileResponse(requestId, true)
+            {
+                Scope = "project",
+                Project = projectDto
+            };
+        }
+
+        private static string[] ComputeRemovedTestIds(string projectPath, string filePath, IReadOnlyList<DiscoveredTest> currentFileTests)
+        {
+            var previousTests = _cache.GetPreviousTests(projectPath);
+            if (previousTests == null) return [];
+
+            var previousFileTests = previousTests
+                .Where(t => string.Equals(t.FilePath, filePath, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+
+            var currentFqns = new HashSet<string>(currentFileTests.Select(t => t.FullyQualifiedName), StringComparer.Ordinal);
+
+            return previousFileTests
+                .Where(t => !currentFqns.Contains(t.FullyQualifiedName))
+                .Select(t => $"{projectPath}|method|{t.FullyQualifiedName}")
+                .ToArray();
+        }
+
+        private static List<DiscoveredTest> MergeFileTestsWithCached(string projectPath, string filePath, IReadOnlyList<DiscoveredTest> fileTests)
+        {
+            var previousTests = _cache.GetPreviousTests(projectPath);
+            var merged = new List<DiscoveredTest>();
+
+            if (previousTests != null)
+            {
+                // Keep tests from other files
+                merged.AddRange(previousTests.Where(t =>
+                    !string.Equals(t.FilePath, filePath, StringComparison.OrdinalIgnoreCase)));
+            }
+
+            // Add tests from the changed file
+            merged.AddRange(fileTests);
+            return merged;
+        }
+
+        private static TestProjectDto BuildProjectDtoFromTests(
+            string projectPath,
+            IReadOnlyList<DiscoveredTest> tests,
+            bool theoryListingAvailable,
+            Dictionary<string, List<TestCaseDto>>? theoryCasesByMethod,
+            Compilation compilation)
+        {
+            var projectName = Path.GetFileNameWithoutExtension(projectPath);
+            var targetFramework = TryGetTargetFrameworkFromProjectFile(projectPath);
+
+            // Reuse the same grouping logic as BuildProjectDto
+            var namespaceGroups = tests
+                .GroupBy(t => ExtractNamespace(t.FullyQualifiedName))
+                .OrderBy(g => g.Key);
+
+            var namespaces = new List<TestNamespaceDto>();
+
+            foreach (var nsGroup in namespaceGroups)
+            {
+                var classGroups = nsGroup
+                    .GroupBy(t => ExtractClassName(t.FullyQualifiedName))
+                    .OrderBy(g => g.Key);
+
+                var classes = new List<TestClassDto>();
+
+                foreach (var classGroup in classGroups)
+                {
+                    var methods = classGroup
+                        .Select(t =>
+                        {
+                            IReadOnlyList<TestCaseDto>? cases = null;
+
+                            if (t.IsTheory)
+                            {
+                                if (theoryListingAvailable)
+                                {
+                                    cases = theoryCasesByMethod != null
+                                        && theoryCasesByMethod.TryGetValue(t.FullyQualifiedName, out var mappedCases)
+                                        && mappedCases.Count > 0
+                                        ? mappedCases
+                                        : Array.Empty<TestCaseDto>();
+                                }
+                            }
+
+                            return new TestMethodDto(
+                                Id: t.FullyQualifiedName,
+                                Name: ExtractMethodName(t.FullyQualifiedName),
+                                FullyQualifiedName: t.FullyQualifiedName,
+                                Location: new TestLocation(
+                                    t.FilePath,
+                                    t.StartLine,
+                                    t.StartColumn,
+                                    t.EndLine,
+                                    t.EndColumn),
+                                IsTheory: t.IsTheory,
+                                Cases: cases);
+                        })
+                        .OrderBy(m => m.Name)
+                        .ToArray();
+
+                    var classLocation = methods.Length > 0
+                        ? new TestLocation(methods[0].Location.FilePath, 0, 0, 0, 0)
+                        : null;
+
+                    classes.Add(new TestClassDto(
+                        Name: classGroup.Key,
+                        Methods: methods,
+                        Location: classLocation));
+                }
+
+                namespaces.Add(new TestNamespaceDto(
+                    Name: nsGroup.Key,
+                    Classes: [.. classes]));
+            }
+
+            return new TestProjectDto(
+                Name: projectName,
+                ProjectPath: projectPath,
+                TargetFramework: targetFramework,
+                Namespaces: [.. namespaces]);
         }
 
         /// <summary>

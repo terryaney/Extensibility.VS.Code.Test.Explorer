@@ -78,9 +78,158 @@ public sealed class XunitDiscovery
     }
 
     /// <summary>
+    /// Discovers tests in a single syntax tree against a given compilation.
+    /// Used for incremental file-scoped discovery.
+    /// </summary>
+    public static IReadOnlyList<DiscoveredTest> DiscoverTestsInFile(
+        SyntaxTree syntaxTree,
+        Compilation compilation,
+        string projectPath,
+        CancellationToken cancellationToken = default)
+    {
+        var semanticModel = compilation.GetSemanticModel(syntaxTree);
+        var syntaxRoot = syntaxTree.GetRoot(cancellationToken);
+        var filePath = syntaxTree.FilePath;
+
+        var testMethods = FindTestMethods(syntaxRoot, semanticModel, cancellationToken);
+        var discoveredTests = new List<DiscoveredTest>();
+
+        foreach (var (methodDeclaration, methodSymbol, isTheory) in testMethods)
+        {
+            var test = CreateDiscoveredTest(
+                methodDeclaration,
+                methodSymbol,
+                filePath,
+                projectPath,
+                isTheory);
+
+            if (test != null)
+            {
+                discoveredTests.Add(test);
+            }
+        }
+
+        return discoveredTests;
+    }
+
+    /// <summary>
+    /// Checks whether a syntax tree contains any class that is a base type
+    /// for test classes in the compilation.
+    /// </summary>
+    public static bool ContainsTestBaseClass(
+        SyntaxTree syntaxTree,
+        Compilation compilation,
+        CancellationToken cancellationToken = default)
+    {
+        var semanticModel = compilation.GetSemanticModel(syntaxTree);
+        var syntaxRoot = syntaxTree.GetRoot(cancellationToken);
+
+        var classDeclarations = syntaxRoot.DescendantNodes()
+            .OfType<ClassDeclarationSyntax>();
+
+        foreach (var classDecl in classDeclarations)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var classSymbol = semanticModel.GetDeclaredSymbol(classDecl, cancellationToken);
+            if (classSymbol == null) continue;
+
+            // Check if any other type in the compilation inherits from this class
+            // and has test methods
+            if (IsBaseOfTestClass(classSymbol, compilation, cancellationToken))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Determines whether the given class symbol is a base type for any class
+    /// that contains xUnit test methods.
+    /// </summary>
+    private static bool IsBaseOfTestClass(
+        INamedTypeSymbol baseCandidate,
+        Compilation compilation,
+        CancellationToken cancellationToken)
+    {
+        foreach (var syntaxTree in compilation.SyntaxTrees)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            // Skip the file containing the base candidate itself
+            if (string.Equals(syntaxTree.FilePath, baseCandidate.Locations.FirstOrDefault()?.SourceTree?.FilePath,
+                StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var model = compilation.GetSemanticModel(syntaxTree);
+            var root = syntaxTree.GetRoot(cancellationToken);
+            var classes = root.DescendantNodes().OfType<ClassDeclarationSyntax>();
+
+            foreach (var classDecl in classes)
+            {
+                var classSymbol = model.GetDeclaredSymbol(classDecl, cancellationToken);
+                if (classSymbol == null) continue;
+
+                if (InheritsFrom(classSymbol, baseCandidate))
+                {
+                    // Check if the derived class has test methods
+                    var methods = classDecl.Members.OfType<MethodDeclarationSyntax>();
+                    foreach (var method in methods)
+                    {
+                        var (isTest, _) = GetXunitAttributeInfo(method, model, cancellationToken);
+                        if (isTest) return true;
+                    }
+
+                    // Also check if the base class itself has test methods (inherited tests)
+                    var baseModel = compilation.GetSemanticModel(
+                        baseCandidate.Locations.FirstOrDefault()?.SourceTree
+                        ?? syntaxTree);
+                    var baseSyntaxRefs = baseCandidate.DeclaringSyntaxReferences;
+                    foreach (var syntaxRef in baseSyntaxRefs)
+                    {
+                        var baseClassDecl = syntaxRef.GetSyntax(cancellationToken) as ClassDeclarationSyntax;
+                        if (baseClassDecl == null) continue;
+
+                        var baseMethods = baseClassDecl.Members.OfType<MethodDeclarationSyntax>();
+                        foreach (var method in baseMethods)
+                        {
+                            var baseMethodModel = compilation.GetSemanticModel(syntaxRef.SyntaxTree);
+                            var (isTest, _) = GetXunitAttributeInfo(method, baseMethodModel, cancellationToken);
+                            if (isTest) return true;
+                        }
+                    }
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Checks whether a type inherits from a given base type (walking the full chain).
+    /// </summary>
+    private static bool InheritsFrom(INamedTypeSymbol derived, INamedTypeSymbol baseType)
+    {
+        var current = derived.BaseType;
+        while (current != null)
+        {
+            if (SymbolEqualityComparer.Default.Equals(current, baseType))
+            {
+                return true;
+            }
+            current = current.BaseType;
+        }
+        return false;
+    }
+
+    /// <summary>
     /// Finds all method declarations with xUnit test attributes.
     /// </summary>
-    private static List<(MethodDeclarationSyntax Method, IMethodSymbol Symbol, bool IsTheory)> FindTestMethods(
+    internal static List<(MethodDeclarationSyntax Method, IMethodSymbol Symbol, bool IsTheory)> FindTestMethods(
         SyntaxNode syntaxRoot,
         SemanticModel semanticModel,
         CancellationToken cancellationToken)
@@ -112,7 +261,7 @@ public sealed class XunitDiscovery
     /// Determines whether a method is an xUnit test and whether it is a theory.
     /// Primary detection uses semantic symbols; raw syntax fallback is used when symbol resolution fails.
     /// </summary>
-    private static (bool IsTest, bool IsTheory) GetXunitAttributeInfo(
+    internal static (bool IsTest, bool IsTheory) GetXunitAttributeInfo(
         MethodDeclarationSyntax methodDeclaration,
         SemanticModel semanticModel,
         CancellationToken cancellationToken)
