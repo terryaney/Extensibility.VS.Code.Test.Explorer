@@ -1,7 +1,7 @@
 {
-  "name": "kat-csharp-test-explorer",
-  "displayName": "KAT - C# Test Explorer",
-  "description": "C# test discovery and execution using VS Code Testing API",
+  "name": "kat-test-explorer",
+  "displayName": "KAT Test Explorer",
+  "description": "C# test discovery and execution using VS Code Testing API.",
   "version": "1.0.0",
   "publisher": "conduent-kat-team",
   "author": {

@@ -1,19 +1,19 @@
-# KAT C# Test Explorer
+# KAT Test Explorer
 
 C# test discovery and execution using VS Code Testing API. Discovers xUnit tests via Roslyn/MSBuildWorkspace, runs and debugs via `dotnet test` (VSTest runner).
 
 ## Features
 
-- Discover xUnit v3 tests in C# projects (solution or workspace)
+- Discover xUnit v2 and v3 tests in C# projects (solution or workspace)
 - Run tests from the Testing Explorer tree, editor gutter, or command palette
 - Real-time test execution output with pass/fail results
 - Integration with VS Code's native Testing UI (Test Results pane, gutter decorations)
-- Debug test support (in progress — see Known Issues)
+- Debug test support (xUnit v2 via VSTest host attach, xUnit v3 via direct exe with `-waitForDebugger`)
 
 ## Requirements
 
 - .NET 8 SDK or later
-- VS Code 1.85.0 or later
+- VS Code 1.88.0 or later
 - [C# extension](https://marketplace.visualstudio.com/items?itemName=ms-dotnettools.csharp) for VS Code
 
 ## Development Workflow
@@ -41,7 +41,7 @@ npm install
 npm run package
 ```
 
-Produces `csharp-test-explorer-0.1.0.vsix`.
+Produces `kat-test-explorer-1.0.0.vsix`.
 
 ### Installing the VSIX
 
@@ -49,7 +49,7 @@ Produces `csharp-test-explorer-0.1.0.vsix`.
 
 ```powershell
 # Close all VS Code windows first, then:
-code --install-extension "c:\BTR\Camelot\Extensibility\VS.Code.Test.Explorer\extension\kat-csharp-test-explorer-0.1.0.vsix" --force
+code --install-extension "c:\BTR\Camelot\Extensibility\VS.Code.Test.Explorer\extension\kat-test-explorer-1.0.0.vsix" --force
 ```
 
 ### Examining extension output
