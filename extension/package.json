@@ -2,7 +2,7 @@
   "name": "kat-test-explorer",
   "displayName": "KAT Test Explorer",
   "description": "C# test discovery and execution using VS Code Testing API.",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "publisher": "conduent-kat-team",
   "author": {
     "name": "Terry Aney",
@@ -143,7 +143,7 @@
     "watch": "node esbuild.js --watch",
     "pretest": "npm run compile",
     "lint": "eslint src --ext ts",
-    "package": "vsce package --allow-missing-repository --no-yarn --no-update-package-json"
+    "package": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/release.ps1"
   },
   "devDependencies": {
     "@types/node": "^20.10.0",
