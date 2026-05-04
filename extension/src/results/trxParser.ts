@@ -32,6 +32,7 @@ export async function parseTrxFile(trxFilePath: string): Promise<TrxTestResult[]
         attributeNamePrefix: '@_',
         textNodeName: '#text',
         parseAttributeValue: false,
+        processEntities: true,
         trimValues: true
     });
     
@@ -99,13 +100,22 @@ export async function parseTrxFile(trxFilePath: string): Promise<TrxTestResult[]
             // Extract error info
             if (unitTestResult.Output.ErrorInfo) {
                 const errorInfo = unitTestResult.Output.ErrorInfo;
-                errorMessage = errorInfo.Message;
-                errorStackTrace = errorInfo.StackTrace;
+                // Normalize CRLF/CR → LF at the adapter boundary so VS Code's TestMessage
+                // renderer receives clean LF-only strings. dotnet test on Windows embeds
+                // \r\n (or XML-escaped &#xD;) in message and stack trace content.
+                errorMessage = typeof errorInfo.Message === 'string'
+                    ? decodeCommonTextEntities(errorInfo.Message).replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+                    : errorInfo.Message;
+                errorStackTrace = typeof errorInfo.StackTrace === 'string'
+                    ? decodeCommonTextEntities(errorInfo.StackTrace).replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+                    : errorInfo.StackTrace;
             }
             
             // Extract stdout
             if (unitTestResult.Output.StdOut) {
-                stdOut = unitTestResult.Output.StdOut;
+                stdOut = typeof unitTestResult.Output.StdOut === 'string'
+                    ? decodeCommonTextEntities(unitTestResult.Output.StdOut)
+                    : unitTestResult.Output.StdOut;
             }
         }
         
@@ -172,4 +182,17 @@ function parseDuration(duration: string): number {
     const fraction = secondsParts.length > 1 ? parseFloat('0.' + secondsParts[1]) : 0;
     
     return (hours * 3600 + minutes * 60 + seconds) * 1000 + fraction * 1000;
+}
+
+function decodeCommonTextEntities(value: string): string {
+    return value
+        .replace(/&#xD;/gi, '\r')
+        .replace(/&#13;/g, '\r')
+        .replace(/&#xA;/gi, '\n')
+        .replace(/&#10;/g, '\n')
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&quot;/g, '"')
+        .replace(/&apos;/g, "'")
+        .replace(/&amp;/g, '&');
 }

@@ -23,15 +23,18 @@ export function buildVSTestFilter(tests: vscode.TestItem[]): string {
         const metadata = getTestMetadata(item);
         
         if (!metadata) {
-            // No metadata means this is likely a project, namespace, or class node
-            // Extract fully qualified name from ID (format: projectPath|fullyQualifiedName)
+            // No metadata means this is a project, namespace, or class node.
+            // ID formats:
+            //   project:   projectPath                         (1 segment, no |)
+            //   namespace: projectPath|ns|namespaceName        (3 segments)
+            //   class:     projectPath|cls|namespace.ClassName (3 segments)
             const parts = item.id.split('|');
-            if (parts.length === 2 && parts[1]) {
-                // Container node - use contains operator
-                const fqn = encodeFilterValue(parts[1]);
+            if (parts.length === 3 && (parts[1] === 'cls' || parts[1] === 'ns') && parts[2]) {
+                // Container node — use contains operator against the FQN
+                const fqn = encodeFilterValue(parts[2]);
                 filterParts.push(`FullyQualifiedName~${fqn}`);
             }
-            // If it's just a project (no |), skip it - shouldRunAll will handle this case
+            // Single-segment (project) node → shouldRunAll handles this; no filter pushed here.
         } else {
             // Leaf node (test method) - use exact match
             const fqn = encodeFilterValue(metadata.fullyQualifiedName);

@@ -8,7 +8,7 @@ import { WorkerClient } from '../worker/workerClient';
 import { buildVSTestFilter, shouldRunAll } from './filterBuilder';
 import { getProjectPath, getTestMetadata, isLeafRunnableItem } from './testItemStore';
 import { parseTrxFile } from '../results/trxParser';
-import { applyTestResults } from '../results/resultMapper';
+import { applyTestResults, TestRunSummary } from '../results/resultMapper';
 import { findTrxFile } from '../dotnet/dotnetTestRunner';
 
 export function createDebugHandler(
@@ -37,6 +37,7 @@ export function createDebugHandler(
 
             for (const [projectPath, tests] of Array.from(testsByProject.entries())) {
                 if (token.isCancellationRequested) { break; }
+                const projectStartMs = Date.now();
 
                 for (const test of tests) {
                     enqueueSelectedLeafRunnableItems(run, test);
@@ -78,13 +79,14 @@ export function createDebugHandler(
 
                 let pid: number | undefined;
                 let processName: string | undefined;
+                let xunitResult: { ready: boolean; outputLines: string[]; processExited: Promise<void> } | undefined;
 
                 if (useXunitV3Direct) {
                     // xUnit v3 -waitForDebugger prints "Waiting for debugger to be attached..."
                     // but does NOT print its PID. Attach by process name instead.
                     processName = path.basename(exePath!, '.exe');
-                    const ready = await waitForXunitV3Ready(exePath!, tests, run, outputChannel, token);
-                    if (!ready) {
+                    xunitResult = await waitForXunitV3Ready(exePath!, tests, run, outputChannel, token);
+                    if (!xunitResult.ready) {
                         outputChannel.appendLine('xUnit v3 process did not become ready for debug attach');
                         for (const test of tests) {
                             markSelectedLeafRunnableItemsErrored(run, test, 'xUnit v3 test runner did not start');
@@ -203,7 +205,8 @@ export function createDebugHandler(
                         try {
                             const trxResults = await parseTrxFile(trxFile);
                             outputChannel.appendLine(`Parsed ${trxResults.length} result(s)`);
-                            void applyTestResults(controller, trxResults, run, outputChannel, tests);
+                            const summary = applyTestResults(controller, trxResults, run, outputChannel, tests);
+                            appendSummaryBlock(run, summary, Date.now() - projectStartMs);
                         } catch (e) {
                             const msg = e instanceof Error ? e.message : String(e);
                             for (const test of tests) {
@@ -217,10 +220,25 @@ export function createDebugHandler(
                         }
                     }
                 } else {
-                    // xUnit v3 direct: no TRX produced; mark passed (debug run)
-                    for (const test of tests) {
-                        markSelectedLeafRunnableItemsPassed(run, test);
+                    // xUnit v3 direct: no TRX produced. Wait for the process to finish
+                    // flushing output (tests run after debugger detaches), then parse the
+                    // console output for pass/fail/skip results instead of blindly marking
+                    // everything as passed.
+                    if (!xunitResult) {
+                        for (const test of tests) {
+                            markSelectedLeafRunnableItemsErrored(run, test, 'xUnit v3 debug result object missing');
+                        }
+                        continue;
                     }
+                    const FLUSH_TIMEOUT_MS = 5000;
+                    await Promise.race([
+                        xunitResult.processExited,
+                        new Promise(r => setTimeout(r, FLUSH_TIMEOUT_MS))
+                    ]);
+                    // Add spacing between raw xUnit process output and normalized per-test results.
+                    run.appendOutput('\r\n\r\n');
+                    const summary = applyXunitV3ConsoleResults(controller, xunitResult.outputLines, run, tests);
+                    appendSummaryBlock(run, summary, Date.now() - projectStartMs);
                 }
             }
 
@@ -275,28 +293,37 @@ function getProjectTargetPath(
  * Returns true when that message is seen (process is paused for attach).
  * Attach should then use processName, not PID, since xUnit v3 does not print its PID.
  */
-function waitForXunitV3Ready(
+async function waitForXunitV3Ready(
     exePath: string,
     tests: vscode.TestItem[],
     run: vscode.TestRun,
     outputChannel: vscode.OutputChannel,
     token: vscode.CancellationToken
-): Promise<boolean> {
+): Promise<{ ready: boolean; outputLines: string[]; processExited: Promise<void> }> {
     const args: string[] = ['-waitForDebugger'];
     for (const test of tests) {
         const metadata = getTestMetadata(test);
         if (metadata) {
             args.push('-method', metadata.fullyQualifiedName);
         } else {
+            // ID formats: projectPath|cls|FQN (3 parts) or projectPath|ns|Name (3 parts)
             const parts = test.id.split('|');
-            if (parts.length === 2 && parts[1]) {
-                args.push('-class', parts[1]);
+            if (parts.length === 3 && parts[1] === 'cls' && parts[2]) {
+                args.push('-class', parts[2]);
+            } else if (parts.length === 3 && parts[1] === 'ns') {
+                // xUnit v3 has no namespace filter arg; running all tests in this invocation
+                outputChannel.appendLine(`Warning: namespace-level filter not supported for xUnit v3 direct; running all`);
             }
         }
     }
     outputChannel.appendLine(`Spawning (xUnit v3 direct): ${exePath} ${args.join(' ')}`);
 
-    return new Promise((resolve) => {
+    // outputLines accumulates complete stdout/stderr lines from the xUnit v3 process.
+    // It keeps filling even after `ready` resolves (tests run after debugger attaches).
+    const outputLines: string[] = [];
+    let pendingLine = '';
+
+    const { ready, processExited } = await new Promise<{ ready: boolean; processExited: Promise<void> }>((resolve) => {
         let resolved = false;
 
         const child = spawn(exePath, args, {
@@ -304,37 +331,60 @@ function waitForXunitV3Ready(
             shell: false
         });
 
+        const processExited = new Promise<void>((exitResolve) => {
+            child.on('close', exitResolve);
+        });
+
         const handleOutput = (data: Buffer) => {
-            const text = data.toString();
+            const rawText = data.toString();
+            const text = decodeCommonTextEntities(rawText);
+
+            // Capture complete lines for post-debug result parsing.
+            // Child process output arrives in arbitrary chunks, so keep a carry-over buffer.
+            const combined = pendingLine + text;
+            const parts = combined.split(/\r?\n/);
+            pendingLine = parts.pop() ?? '';
+            for (const line of parts) {
+                outputLines.push(line);
+            }
+
             run.appendOutput(text.replace(/\n/g, '\r\n'));
             outputChannel.append(text);
             // xUnit v3 prints this when paused waiting for a debugger to attach
             if (!resolved && /Waiting for debugger to be attached/i.test(text)) {
                 resolved = true;
-                resolve(true);
+                resolve({ ready: true, processExited });
             }
         };
 
         child.stdout.on('data', handleOutput);
         child.stderr.on('data', handleOutput);
-        child.on('close', () => { if (!resolved) { resolved = true; resolve(false); } });
+        child.on('close', () => {
+            if (pendingLine.length > 0) {
+                outputLines.push(pendingLine);
+                pendingLine = '';
+            }
+            if (!resolved) { resolved = true; resolve({ ready: false, processExited }); }
+        });
         child.on('error', (err) => {
             outputChannel.appendLine(`xUnit v3 process error: ${err.message}`);
-            if (!resolved) { resolved = true; resolve(false); }
+            if (!resolved) { resolved = true; resolve({ ready: false, processExited }); }
         });
         token.onCancellationRequested(() => {
             child.kill();
-            if (!resolved) { resolved = true; resolve(false); }
+            if (!resolved) { resolved = true; resolve({ ready: false, processExited }); }
         });
         setTimeout(() => {
             if (!resolved) {
                 resolved = true;
                 outputChannel.appendLine('Timeout waiting for xUnit v3 debugger-ready message');
                 child.kill();
-                resolve(false);
+                resolve({ ready: false, processExited });
             }
         }, 30000);
     });
+
+    return { ready, outputLines, processExited };
 }
 
 /**
@@ -392,6 +442,255 @@ function waitForTesthostPid(
             }
         }, 30000);
     });
+}
+
+/**
+ * Parses xUnit v3 console output lines and applies pass/fail/skip states to test items.
+ * xUnit v3 format:  "  <displayName> [PASS|FAIL|SKIP] (optional duration)"
+ * Failed tests are followed by indented error lines until the next result line.
+ * Tests in `expectedItems` that have no output entry are marked as skipped.
+ */
+function applyXunitV3ConsoleResults(
+    controller: vscode.TestController,
+    outputLines: string[],
+    run: vscode.TestRun,
+    expectedItems: vscode.TestItem[]
+): TestRunSummary {
+    // Build a lookup map: FQN → TestItem and displayName → TestItem
+    const itemByFqn = new Map<string, vscode.TestItem>();
+    const itemByLabel = new Map<string, vscode.TestItem>();
+    const stack: vscode.TestItem[] = [];
+    controller.items.forEach(item => stack.push(item));
+    while (stack.length > 0) {
+        const item = stack.pop()!;
+        const metadata = getTestMetadata(item);
+        if (metadata?.fullyQualifiedName) {
+            itemByFqn.set(metadata.fullyQualifiedName, item);
+        }
+        itemByLabel.set(item.label, item);
+        item.children.forEach(child => stack.push(child));
+    }
+
+    // xUnit v3 result line: leading whitespace, then name, then [PASS|FAIL|SKIP], optional (Xms)
+    const resultLineRe = /^\s+(.+?)\s+\[(PASS|FAIL|SKIP)\](?:\s+\(([^)]+)\))?\s*$/;
+
+    const appliedItems = new Set<string>();
+    const appliedOutcomes = new Map<string, 'passed' | 'failed' | 'skipped'>();
+
+    let i = 0;
+    while (i < outputLines.length) {
+        const line = outputLines[i];
+        const match = resultLineRe.exec(line);
+        if (!match) { i++; continue; }
+
+        const displayName = match[1];
+        const outcome = match[2] as 'PASS' | 'FAIL' | 'SKIP';
+        const durationStr = match[3];
+        const durationMs = parseDurationString(durationStr);
+
+        // Look up the test item by FQN first, then by label
+        const testItem = itemByFqn.get(displayName) ?? itemByLabel.get(displayName);
+
+        if (!testItem) {
+            i++;
+            continue;
+        }
+
+        if (outcome === 'PASS') {
+            run.passed(testItem, durationMs);
+            appliedItems.add(testItem.id);
+            appliedOutcomes.set(testItem.id, 'passed');
+            run.appendOutput(`✅ PASSED: ${displayName} (${formatDuration(durationMs)})\r\n`);
+        } else if (outcome === 'SKIP') {
+            run.skipped(testItem);
+            appliedItems.add(testItem.id);
+            appliedOutcomes.set(testItem.id, 'skipped');
+            run.appendOutput(`⏭️ SKIPPED: ${displayName} (N/A)\r\n`);
+        } else {
+            // Collect error lines — indented 4+ spaces, until next result or end
+            i++;
+            const errorLines: string[] = [];
+            while (i < outputLines.length && !resultLineRe.test(outputLines[i])) {
+                errorLines.push(outputLines[i].replace(/^\s{4}/, ''));
+                i++;
+            }
+            const errorText = errorLines.join('\n').trim() || 'Test failed';
+            run.failed(testItem, new vscode.TestMessage(errorText), durationMs);
+            appliedItems.add(testItem.id);
+            appliedOutcomes.set(testItem.id, 'failed');
+            run.appendOutput(`❌ FAILED: ${displayName} (${formatDuration(durationMs)})\r\n`);
+            continue; // i already advanced
+        }
+
+        i++;
+    }
+
+    // Any expected leaf items with no result → skipped (fixture may have prevented execution)
+    const expectedRunnableItems = new Map<string, vscode.TestItem>();
+    for (const item of expectedItems) {
+        collectRunnableItemsForDebug(item, expectedRunnableItems);
+    }
+    const expectedRunnable = Array.from(expectedRunnableItems.values());
+    const unmatched = expectedRunnable.filter(item => !appliedItems.has(item.id));
+
+    const parsedSummary = parseXunitExecutionSummary(outputLines);
+
+    const matchedFailed = countOutcome(appliedOutcomes, 'failed');
+    const matchedSkipped = countOutcome(appliedOutcomes, 'skipped');
+    const matchedPassed = countOutcome(appliedOutcomes, 'passed');
+
+    let inferredPass = 0;
+    let inferredSkip = 0;
+    if (parsedSummary) {
+        inferredPass = Math.max(0, parsedSummary.total - parsedSummary.failed - parsedSummary.skipped - parsedSummary.notRun - matchedPassed);
+        inferredSkip = Math.max(0, parsedSummary.skipped + parsedSummary.notRun - matchedSkipped);
+    }
+
+    // xUnit v3 often prints only failures in debug mode. When the execution summary
+    // proves additional tests ran and passed, mark unmatched tests as passed.
+    let cursor = 0;
+    while (cursor < unmatched.length && inferredPass > 0) {
+        const item = unmatched[cursor++];
+        run.passed(item);
+        appliedItems.add(item.id);
+        appliedOutcomes.set(item.id, 'passed');
+        const metadata = getTestMetadata(item);
+        run.appendOutput(`✅ PASSED: ${metadata?.fullyQualifiedName ?? item.label} (inferred from xUnit execution summary)\r\n`);
+        inferredPass--;
+    }
+
+    while (cursor < unmatched.length && inferredSkip > 0) {
+        const item = unmatched[cursor++];
+        run.skipped(item);
+        appliedItems.add(item.id);
+        appliedOutcomes.set(item.id, 'skipped');
+        const metadata = getTestMetadata(item);
+        run.appendOutput(`⏭️ SKIPPED: ${metadata?.fullyQualifiedName ?? item.label} (inferred from xUnit execution summary)\r\n`);
+        inferredSkip--;
+    }
+
+    // Any remaining unmatched tests are unknown in debug output; keep them skipped,
+    // but emit diagnostics so we can refine parsing without guesswork.
+    for (; cursor < unmatched.length; cursor++) {
+        const item = unmatched[cursor];
+        run.skipped(item);
+        appliedItems.add(item.id);
+        appliedOutcomes.set(item.id, 'skipped');
+        const metadata = getTestMetadata(item);
+        run.appendOutput(`⏭️ SKIPPED: ${metadata?.fullyQualifiedName ?? item.label} (no explicit xUnit result line)\r\n`);
+    }
+
+    const summary: TestRunSummary = {
+        passed: countOutcome(appliedOutcomes, 'passed'),
+        failed: countOutcome(appliedOutcomes, 'failed'),
+        skipped: countOutcome(appliedOutcomes, 'skipped'),
+        total: appliedOutcomes.size,
+        executionTimeMs: 0
+    };
+
+    return summary;
+}
+
+function decodeCommonTextEntities(value: string): string {
+    return value
+        .replace(/&#xD;/gi, '\r')
+        .replace(/&#13;/g, '\r')
+        .replace(/&#xA;/gi, '\n')
+        .replace(/&#10;/g, '\n')
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&quot;/g, '"')
+        .replace(/&apos;/g, "'")
+        .replace(/&amp;/g, '&');
+}
+
+function collectRunnableItemsForDebug(
+    root: vscode.TestItem,
+    collected: Map<string, vscode.TestItem>
+): void {
+    const stack: vscode.TestItem[] = [root];
+    while (stack.length > 0) {
+        const current = stack.pop()!;
+        if (isLeafRunnableItem(current)) {
+            collected.set(current.id, current);
+        }
+        current.children.forEach(child => stack.push(child));
+    }
+}
+
+function parseDurationString(durationStr: string | undefined): number | undefined {
+    if (!durationStr) { return undefined; }
+    const msMatch = durationStr.match(/^([\d.]+)\s*ms$/i);
+    if (msMatch) { return parseFloat(msMatch[1]); }
+    const sMatch = durationStr.match(/^([\d.]+)\s*s$/i);
+    if (sMatch) { return parseFloat(sMatch[1]) * 1000; }
+    return undefined;
+}
+
+function parseXunitExecutionSummary(outputLines: string[]): { total: number; failed: number; skipped: number; notRun: number } | undefined {
+    // Example:
+    //   Camelot.Api.DataStore.Tests.Integration  Total: 4, Errors: 0, Failed: 1, Skipped: 0, Not Run: 0, Time: 16.161s
+    const summaryRe = /Total:\s*(\d+),\s*Errors:\s*\d+,\s*Failed:\s*(\d+),\s*Skipped:\s*(\d+),\s*Not Run:\s*(\d+)/i;
+    for (let i = outputLines.length - 1; i >= 0; i--) {
+        const match = summaryRe.exec(outputLines[i]);
+        if (match) {
+            return {
+                total: parseInt(match[1], 10),
+                failed: parseInt(match[2], 10),
+                skipped: parseInt(match[3], 10),
+                notRun: parseInt(match[4], 10)
+            };
+        }
+    }
+    return undefined;
+}
+
+function countOutcome(map: Map<string, 'passed' | 'failed' | 'skipped'>, outcome: 'passed' | 'failed' | 'skipped'): number {
+    let count = 0;
+    for (const value of map.values()) {
+        if (value === outcome) {
+            count++;
+        }
+    }
+    return count;
+}
+
+function formatDuration(ms: number | undefined): string {
+    if (!ms || ms <= 0) {
+        return 'N/A';
+    }
+
+    if (ms < 1000) {
+        return `${ms}ms`;
+    }
+
+    return `${(ms / 1000).toFixed(2)}s (${ms}ms)`;
+}
+
+function appendSummaryBlock(
+    run: vscode.TestRun,
+    summary: TestRunSummary,
+    totalTimeMs: number
+): void {
+    const resultText = summary.failed > 0 ? '❌ FAILED' : '✅ SUCCEEDED';
+    const executionTimeMs = summary.executionTimeMs > 0 ? summary.executionTimeMs : totalTimeMs;
+
+    run.appendOutput('\r\n========================================\r\n');
+    run.appendOutput('Test Run Summary\r\n');
+    run.appendOutput('========================================\r\n');
+    run.appendOutput(`Total Tests: ${summary.total}\r\n`);
+    run.appendOutput(`Passed: ${summary.passed}\r\n`);
+    run.appendOutput(`Failed: ${summary.failed}\r\n`);
+    run.appendOutput(`Skipped: ${summary.skipped}\r\n`);
+    run.appendOutput(`Result: ${resultText}\r\n`);
+    run.appendOutput(`Test Execution Time: ${formatSummaryDuration(executionTimeMs)}\r\n`);
+    run.appendOutput(`Total Time (including build): ${formatSummaryDuration(totalTimeMs)}\r\n`);
+    run.appendOutput('========================================\r\n');
+}
+
+function formatSummaryDuration(durationMs: number): string {
+    const safeDurationMs = Math.max(0, Math.round(durationMs));
+    return `${(safeDurationMs / 1000).toFixed(2)}s (${safeDurationMs}ms)`;
 }
 
 function getAllTests(controller: vscode.TestController): vscode.TestItem[] {
