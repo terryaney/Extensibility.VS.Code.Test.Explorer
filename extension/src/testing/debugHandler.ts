@@ -131,45 +131,88 @@ export function createDebugHandler(
                     name: SESSION_NAME,
                     request: 'attach',
                     ...(processName ? { processName } : { processId: pid }),
+                    // Prefer user-code-focused debugging for both v2 and v3 paths.
                     justMyCode: true,
                     requireExactSource: false,
                     suppressJITOptimizations: true
                 };
 
-                // Intercept setExceptionBreakpoints for this session and inject a suppression
-                // for System.MissingMethodException. The xUnit v2 VSTest adapter throws this
-                // internally during initialization (InlineDataDiscoverer ctor not found) —
-                // it is caught internally and harmless, but fires before user code runs.
-                // exceptionOptions in the attach config is overridden by VS Code's
-                // setExceptionBreakpoints message, so we must patch it here instead.
-                const trackerReg = vscode.debug.registerDebugAdapterTrackerFactory('coreclr', {
-                    createDebugAdapterTracker(session: vscode.DebugSession): vscode.DebugAdapterTracker | undefined {
-                        if (session.name !== SESSION_NAME) { return undefined; }
-                        return {
-                            onWillReceiveMessage(message: any) {
-                                if (message.command !== 'setExceptionBreakpoints') { return; }
-                                const args = message.arguments ?? (message.arguments = {});
-                                const opts: any[] = args.exceptionOptions ?? [];
-                                const alreadyPresent = opts.some((o: any) =>
-                                    o.path?.some((p: any) =>
-                                        Array.isArray(p.names) && p.names.includes('System.MissingMethodException')));
-                                if (!alreadyPresent) {
-                                    opts.push({
-                                        path: [{ names: ['CLR'] }, { names: ['System.MissingMethodException'] }],
-                                        breakMode: 'never'
-                                    });
-                                    args.exceptionOptions = opts;
+                let trackerReg: vscode.Disposable | undefined;
+                if (!useXunitV3Direct) {
+                    // For v2/VSTest sessions, avoid mutating setExceptionBreakpoints because
+                    // adapter behavior can override Break on All Exceptions when exceptionOptions
+                    // are injected. Instead, detect the known startup MissingMethodException stop
+                    // and immediately continue.
+                    trackerReg = vscode.debug.registerDebugAdapterTrackerFactory('coreclr', {
+                        createDebugAdapterTracker(session: vscode.DebugSession): vscode.DebugAdapterTracker | undefined {
+                            if (session.name !== SESSION_NAME) { return undefined; }
+                            return {
+                                onDidSendMessage(message: any) {
+                                    if (message?.type !== 'event' || message.event !== 'stopped') { return; }
+                                    const body = message.body ?? {};
+                                    if (body.reason !== 'exception') { return; }
+
+                                    const exceptionText = collectStringLeaves(body).join(' | ');
+
+									// if (!/\bMissingMethodException\b/i.test(exceptionText)) { return; }
+                                    // outputChannel.appendLine('DAP <- stopped(exception MissingMethodException) from v2 adapter startup; auto-continuing');
+
+									/*
+									GPT 5.3 Warning:
+									Ignoring all exceptions thrown from System.Private.CoreLib.dll can hide real defects in my code path, because many 
+									first-failure exceptions originate in BCL APIs before being wrapped by framework layers (for example xUnit 
+									invokers/aggregators). By the time the error surfaces in user code, critical context about the original throw site 
+									and exception type may be lost or transformed. This can delay root-cause analysis and make failures look like 
+									test-framework issues instead of application bugs. Blanket suppression should therefore be avoided in favor of 
+									narrowly targeted noise filtering.
+
+									I had disagreed:
+									I'm going against your advice.  
+									
+									1. Original ApplicationException thrown in test method.
+									2. Next break was in Xunit.TestInvoker stating error was thrown in System.Private.CoreLib.dll
+										protected virtual object CallTestMethod(object testClassInstance)
+											=> TestMethod.Invoke(testClassInstance, TestMethodArguments);
+									3. Next break was in Xunit.Executiontimer (on line await asyncAction()):
+										public async Task AggregateAsync(Func<Task> asyncAction)
+										{
+											var stopwatch = Stopwatch.StartNew();
+											try
+											{
+												await asyncAction();
+											}
+											finally
+											{
+												total += stopwatch.Elapsed;
+											}
+										}
+									4. Final break was in Xunit.ExceptionAggregator (on line on await code()):
+										public async Task RunAsync(Func<Task> code)
+										{
+											try
+											{
+												await code();
+											}
+											catch (Exception ex)
+											{
+												exceptions.Add(ex.Unwrap());
+											}
+										}
+									*/
+                                    if (!/\bSystem\.Private\.CoreLib\.dll\b/i.test(exceptionText)) { return; }
+
+                                    outputChannel.appendLine('DAP <- stopped(exception from System.Private.CoreLib.dll) from v2 adapter startup; auto-continuing');
+                                    void vscode.commands.executeCommand('workbench.action.debug.continue');
                                 }
-                                outputChannel.appendLine(`DAP → setExceptionBreakpoints (patched MissingMethodException → never)`);
-                            }
-                        };
-                    }
-                });
+                            };
+                        }
+                    });
+                }
 
                 const started = await vscode.debug.startDebugging(undefined, attachConfig, { testRun: run });
 
                 if (!started) {
-                    trackerReg.dispose();
+                    trackerReg?.dispose();
                     outputChannel.appendLine('Failed to start attach debug session');
                     for (const test of tests) {
                         markSelectedLeafRunnableItemsErrored(run, test, 'Failed to attach debugger to test runner');
@@ -193,7 +236,7 @@ export function createDebugHandler(
                     });
                 });
 
-                trackerReg.dispose();
+                trackerReg?.dispose();
                 outputChannel.appendLine('Debug session ended.');
 
                 if (!useXunitV3Direct) {
@@ -254,6 +297,40 @@ export function createDebugHandler(
             run.end();
         }
     };
+}
+
+function collectStringLeaves(value: unknown, maxDepth = 6): string[] {
+    const results: string[] = [];
+    const seen = new Set<unknown>();
+
+    const walk = (node: unknown, depth: number) => {
+        if (depth > maxDepth) { return; }
+        if (node == null) { return; }
+        if (typeof node === 'string') {
+            const trimmed = node.trim();
+            if (trimmed.length > 0) {
+                results.push(trimmed);
+            }
+            return;
+        }
+        if (typeof node !== 'object') { return; }
+        if (seen.has(node)) { return; }
+        seen.add(node);
+
+        if (Array.isArray(node)) {
+            for (const item of node) {
+                walk(item, depth + 1);
+            }
+            return;
+        }
+
+        for (const field of Object.values(node as Record<string, unknown>)) {
+            walk(field, depth + 1);
+        }
+    };
+
+    walk(value, 0);
+    return results;
 }
 
 /**
@@ -403,7 +480,6 @@ function waitForTesthostPid(
 
         const child = spawn('dotnet', args, {
             cwd: path.dirname(projectPath),
-            shell: true,
             // VSTEST_DEBUG_NOBP=1 suppresses the Debugger.Break() call VSTest makes after attach,
             // preventing an unwanted initial stop. Pending breakpoints bind on module load without
             // needing the process to pause first.
