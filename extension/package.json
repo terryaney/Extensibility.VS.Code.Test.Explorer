@@ -121,12 +121,6 @@
           "group": "inline"
         }
       ],
-      "testing/item/open": [
-        {
-          "command": "test-explorer.goToTest",
-          "when": "testId =~ /\\|(method|case)\\|/"
-        }
-      ],
       "testing/item/gutter": [
         {
           "command": "test-explorer.runTestFromGutter",
