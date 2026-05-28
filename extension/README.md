@@ -1,6 +1,6 @@
 # KAT Test Explorer
 
-C# test discovery and execution using VS Code Testing API. Discovers xUnit tests via Roslyn/MSBuildWorkspace, runs and debugs via `dotnet test` (VSTest runner).
+C# test discovery and execution using VS Code Testing API. Discovers xUnit tests via Roslyn/MSBuildWorkspace, runs via `dotnet test`, and debugs with either VSTest host attach or the xUnit v3 project executable depending on the selected scope.
 
 ## Features
 
@@ -8,7 +8,10 @@ C# test discovery and execution using VS Code Testing API. Discovers xUnit tests
 - Run tests from the Testing Explorer tree, editor gutter, or command palette
 - Real-time test execution output with pass/fail results
 - Integration with VS Code's native Testing UI (Test Results pane, gutter decorations)
-- Debug test support (xUnit v2 via VSTest host attach, xUnit v3 via direct exe with `-waitForDebugger`)
+- Debug test support:
+  - xUnit v2: VSTest host attach
+  - xUnit v3 project/class/method selections: direct exe with `-waitForDebugger`
+  - xUnit v3 namespace and explicit theory-case selections: automatic VSTest fallback for precise targeting
 
 ## Requirements
 
@@ -62,7 +65,7 @@ Open the Output panel (`Ctrl+Shift+U`) and select **KAT C# Test Explorer** from 
 - VS Code extension host process
 - Test controller (`src/testing/controller.ts`) — builds test tree, handles discovery
 - Run handler (`src/testing/runHandler.ts`) — executes `dotnet test`, parses TRX
-- Debug handler (`src/testing/debugHandler.ts`) — spawns testhost with `VSTEST_HOST_DEBUG=1`, attaches coreclr debugger
+- Debug handler (`src/testing/debugHandler.ts`) — routes debug sessions to VSTest host attach for xUnit v2 and unsupported xUnit v3 scopes, or to the xUnit v3 project executable with `-waitForDebugger` when the selection can be represented directly
 - Worker client (`src/worker/workerClient.ts`) — NDJSON IPC to .NET worker
 
 ### Worker (.NET 8 console app)

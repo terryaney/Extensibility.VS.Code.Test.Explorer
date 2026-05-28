@@ -10,12 +10,12 @@ A VS Code extension for C# test discovery and execution using the VS Code Testin
 
 ## Getting Started
 
-1. [Download the extension](https://github.com/terryaney/Extensibility.VS.Code.Test.Explorer/raw/main/dist/kat-test-explorer-1.0.3.vsix).
+1. [Download the extension](https://github.com/terryaney/Extensibility.VS.Code.Test.Explorer/raw/main/dist/kat-test-explorer-1.0.4.vsix).
 1. Press `Ctrl+Shift+P` to open the VS Code command palette. Type `VSIX` and select **Extensions: Install from VSIX...**.
 
 ![Install from VSIX](media/install.png)
 
-3. Browse to the downloaded `kat-test-explorer-1.0.3.vsix` file and select it.
+3. Browse to the downloaded `kat-test-explorer-1.0.4.vsix` file and select it.
 4. Close and reopen VS Code — the extension activates automatically for any workspace containing a `.csproj` or `.sln` file.
 5. Open the **Testing** pane (`Ctrl+Shift+T` or the flask icon in the Activity Bar) to see your discovered tests.
 
@@ -31,7 +31,7 @@ Install [previous versions](#previous-versions) of the extension if needed.
 
 <!-- screenshot: Gutter run/debug icons next to test methods -->
 
-3. **Debug Support** — Debug individual tests with full breakpoint support. Uses VSTest host attach for xUnit v2 and the `-waitForDebugger` flag for xUnit v3.
+3. **Debug Support** — Debug tests with full breakpoint support. xUnit v2 uses VSTest host attach. xUnit v3 uses the test project's executable with `-waitForDebugger` for project, class, and method selections, and automatically falls back to VSTest for namespace selections and explicit theory-case selections when that is the only precise routing option.
 
 <!-- screenshot: Debug session hitting a breakpoint in a test -->
 
@@ -57,6 +57,7 @@ Install [previous versions](#previous-versions) of the extension if needed.
 
 ## Previous Versions
 
+1. [1.0.3](https://github.com/terryaney/Extensibility.VS.Code.Test.Explorer/raw/main/dist/kat-test-explorer-1.0.3.vsix)
 1. [1.0.2](https://github.com/terryaney/Extensibility.VS.Code.Test.Explorer/raw/main/dist/kat-test-explorer-1.0.2.vsix)
 1. [1.0.1](https://github.com/terryaney/Extensibility.VS.Code.Test.Explorer/raw/main/dist/kat-test-explorer-1.0.1.vsix)
 1. [1.0.0](https://github.com/terryaney/Extensibility.VS.Code.Test.Explorer/raw/main/dist/kat-test-explorer-1.0.0.vsix)

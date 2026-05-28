@@ -70,9 +70,12 @@ export function createDebugHandler(
                 const targetPath = await getProjectTargetPath(projectPath, outputChannel);
                 const exePath = targetPath ? targetPath.replace(/\.dll$/i, '.exe') : undefined;
                 const isXunitV3 = !!exePath && fs.existsSync(exePath);
-                const hasCaseKindSelection = hasCaseKindInSelection(tests);
-                const useXunitV3Direct = isXunitV3 && !hasCaseKindSelection;
-                outputChannel.appendLine(`Target path: ${targetPath ?? '(unknown)'} | exe: ${exePath ?? '(none)'} | xUnit v3 direct: ${useXunitV3Direct} | has case-kind selection: ${hasCaseKindSelection}`);
+                const directSelectionSupport = getXunitV3DirectSelectionSupport(tests);
+                const useXunitV3Direct = isXunitV3 && directSelectionSupport.supported;
+                outputChannel.appendLine(`Target path: ${targetPath ?? '(unknown)'} | exe: ${exePath ?? '(none)'} | xUnit v3 direct: ${useXunitV3Direct} | selection routing: ${directSelectionSupport.reason}`);
+                if (isXunitV3 && !directSelectionSupport.supported) {
+                    outputChannel.appendLine(`Using VSTest fallback for precise debug selection: ${directSelectionSupport.reason}`);
+                }
 
                 run.appendOutput(`\r\n=== Debugging tests in ${path.basename(projectPath)} ===\r\n`);
                 run.appendOutput(`\r\nStarting test runner... waiting for debugger attachment.\r\n`);
@@ -833,22 +836,50 @@ function groupTestsByProject(tests: readonly vscode.TestItem[]): Map<string, vsc
     return grouped;
 }
 
-function hasCaseKindInSelection(tests: readonly vscode.TestItem[]): boolean {
-    const visited = new Set<string>();
-    const stack: vscode.TestItem[] = [...tests];
+function getXunitV3DirectSelectionSupport(tests: readonly vscode.TestItem[]): { supported: boolean; reason: string } {
+    const unsupportedReasons = new Set<string>();
+    let includesProjectSelection = false;
 
-    while (stack.length > 0) {
-        const item = stack.pop()!;
-        if (visited.has(item.id)) { continue; }
-        visited.add(item.id);
-
-        const metadata = getTestMetadata(item);
-        if (metadata?.kind === 'case') {
-            return true;
+    for (const test of tests) {
+        const metadata = getTestMetadata(test);
+        if (metadata?.kind === 'method') {
+            continue;
         }
 
-        item.children.forEach(child => stack.push(child));
+        if (metadata?.kind === 'case') {
+            unsupportedReasons.add('explicit case selections require VSTest fallback');
+            continue;
+        }
+
+        if (shouldRunAll(test)) {
+            includesProjectSelection = true;
+            continue;
+        }
+
+        const parts = test.id.split('|');
+        if (parts.length === 3 && parts[1] === 'cls' && parts[2]) {
+            continue;
+        }
+
+        if (parts.length === 3 && parts[1] === 'ns' && parts[2]) {
+            unsupportedReasons.add('namespace selections require VSTest fallback');
+            continue;
+        }
+
+        unsupportedReasons.add(`unsupported selection '${test.id}' requires VSTest fallback`);
     }
 
-    return false;
+    if (unsupportedReasons.size > 0) {
+        return {
+            supported: false,
+            reason: Array.from(unsupportedReasons).join('; ')
+        };
+    }
+
+    return {
+        supported: true,
+        reason: includesProjectSelection
+            ? 'project, class, and method selections are representable by xUnit v3 direct'
+            : 'class and method selections are representable by xUnit v3 direct'
+    };
 }
