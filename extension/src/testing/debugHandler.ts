@@ -51,10 +51,16 @@ export function createDebugHandler(
                         cwd: path.dirname(projectPath),
                         shell: true
                     });
+                    const cancelListener = token.onCancellationRequested(() => {
+                        if (buildProc.pid) {
+                            spawn('taskkill', ['/F', '/T', '/PID', String(buildProc.pid)], { shell: true });
+                        }
+                        resolve(1);
+                    });
                     buildProc.stdout.on('data', (d: Buffer) => outputChannel.append(d.toString()));
                     buildProc.stderr.on('data', (d: Buffer) => outputChannel.append(d.toString()));
-                    buildProc.on('close', resolve);
-                    buildProc.on('error', () => resolve(1));
+                    buildProc.on('close', (code) => { cancelListener.dispose(); resolve(code ?? 1); });
+                    buildProc.on('error', () => { cancelListener.dispose(); resolve(1); });
                 });
 
                 if (buildResult !== 0) {
