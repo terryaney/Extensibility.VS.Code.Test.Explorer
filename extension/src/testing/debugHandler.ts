@@ -44,8 +44,16 @@ export function createDebugHandler(
                 }
 
                 // Build first so it doesn't eat into the debugger-attach window.
+                // Also capture the target DLL path from the build output ("ProjectName -> /path/foo.dll")
+                // to avoid a redundant MSBuild invocation afterwards.
                 run.appendOutput(`\r\nBuilding ${path.basename(projectPath)}...\r\n`);
                 outputChannel.appendLine(`Building: dotnet build ${projectPath} --configuration Debug`);
+                const projectName = path.basename(projectPath, '.csproj');
+                const buildOutputTargetRe = new RegExp(
+                    `\\b${projectName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b\\s+->\\s+(.+\\.dll)`,
+                    'i'
+                );
+                let targetPathFromBuild: string | undefined;
                 const buildResult = await new Promise<number>((resolve) => {
                     const buildProc = spawn('dotnet', ['build', projectPath, '--configuration', 'Debug'], {
                         cwd: path.dirname(projectPath),
@@ -57,15 +65,31 @@ export function createDebugHandler(
                         }
                         resolve(1);
                     });
-                    buildProc.stdout.on('data', (d: Buffer) => outputChannel.append(d.toString()));
-                    buildProc.stderr.on('data', (d: Buffer) => outputChannel.append(d.toString()));
+                    buildProc.stdout.on('data', (d: Buffer) => {
+                        const text = d.toString();
+                        outputChannel.append(text);
+                        run.appendOutput(text.replace(/\n/g, '\r\n'));
+                        if (!targetPathFromBuild) {
+                            const m = buildOutputTargetRe.exec(text);
+                            if (m) { targetPathFromBuild = m[1].trim(); }
+                        }
+                    });
+                    buildProc.stderr.on('data', (d: Buffer) => {
+                        const text = d.toString();
+                        outputChannel.append(text);
+                        run.appendOutput(text.replace(/\n/g, '\r\n'));
+                    });
                     buildProc.on('close', (code) => { cancelListener.dispose(); resolve(code ?? 1); });
                     buildProc.on('error', () => { cancelListener.dispose(); resolve(1); });
                 });
 
                 if (buildResult !== 0) {
+                    const buildFailMsg = token.isCancellationRequested
+                        ? 'Build cancelled'
+                        : 'Build failed before debug run';
+                    run.appendOutput(`\r\n❌ ${buildFailMsg}\r\n`);
                     for (const test of tests) {
-                        markSelectedLeafRunnableItemsErrored(run, test, 'Build failed before debug run');
+                        markSelectedLeafRunnableItemsErrored(run, test, buildFailMsg);
                     }
                     continue;
                 }
@@ -73,7 +97,7 @@ export function createDebugHandler(
                 // Determine whether this is an xUnit v3 project (output is a self-contained .exe).
                 // MSBuild's TargetPath always returns the managed .dll; the apphost .exe is generated
                 // alongside it for executable projects. Swap the extension to check for its presence.
-                const targetPath = await getProjectTargetPath(projectPath, outputChannel);
+                const targetPath = targetPathFromBuild ?? await getProjectTargetPath(projectPath, outputChannel);
                 const exePath = targetPath ? targetPath.replace(/\.dll$/i, '.exe') : undefined;
                 const isXunitV3 = !!exePath && fs.existsSync(exePath);
                 const directSelectionSupport = getXunitV3DirectSelectionSupport(tests);
@@ -266,9 +290,10 @@ export function createDebugHandler(
                             }
                         }
                     } else {
-                        outputChannel.appendLine('TRX not found - marking tests as passed');
+                        outputChannel.appendLine('TRX not found after debug run');
+                        run.appendOutput('\r\n⚠️ Test results file not found — results could not be determined.\r\n');
                         for (const test of tests) {
-                            markSelectedLeafRunnableItemsPassed(run, test);
+                            markSelectedLeafRunnableItemsErrored(run, test, 'Test results file (TRX) not found after debug run');
                         }
                     }
                 } else {
