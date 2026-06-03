@@ -258,7 +258,7 @@ namespace TestExplorer.Worker
                 Dictionary<string, List<TestCaseDto>>? theoryCasesByMethod = null;
                 var theoryListingAvailable = false;
 
-                if (fileTests.Any(t => t.IsTheory))
+                if (mergedTests.Any(t => t.IsTheory))
                 {
                     (theoryListingAvailable, theoryCasesByMethod) = await TryListTheoryCasesAsync(projectPath, mergedTests);
                 }
@@ -399,7 +399,8 @@ namespace TestExplorer.Worker
                                     t.EndLine,
                                     t.EndColumn),
                                 IsTheory: t.IsTheory,
-                                Cases: cases);
+                                Cases: cases,
+                                DataAttributeType: t.DataAttributeType);
                         })
                         .OrderBy(m => m.Name)
                         .ToArray();
@@ -500,13 +501,14 @@ namespace TestExplorer.Worker
                                     t.EndLine,
                                     t.EndColumn),
                                 IsTheory: t.IsTheory,
-                                Cases: cases);
+                                Cases: cases,
+                                DataAttributeType: t.DataAttributeType);
                         })
                         .OrderBy(m => m.Name)
                         .ToArray();
 
                     // For class location, use the first method's file path (we don't have class-level location)
-                    var classLocation = methods.Length > 0 
+                    var classLocation = methods.Length > 0
                         ? new TestLocation(methods[0].Location.FilePath, 0, 0, 0, 0)
                         : null;
 

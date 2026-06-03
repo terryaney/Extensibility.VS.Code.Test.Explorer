@@ -223,16 +223,19 @@ export function buildTestTree(controller: vscode.TestController, projects: TestP
                     if (method.isTheory && method.cases && method.cases.length > 0) {
                         methodItem.canResolveChildren = true;
 
+                        const dataType = method.dataAttributeType ?? 'Theory';
                         const seenCaseIds = new Set<string>();
-                        for (const testCase of method.cases) {
+                        for (let caseIndex = 0; caseIndex < method.cases.length; caseIndex++) {
+                            const testCase = method.cases[caseIndex];
                             const caseKey = hashDisplayName(testCase.displayName);
                             const caseId = `${project.projectPath}|${method.fullyQualifiedName}|case|${caseKey}`;
                             seenCaseIds.add(caseId);
+                            const caseLabel = `${method.name} (${dataType} ${caseIndex + 1})`;
                             const caseItem = createOrGetTestItem(
                                 controller,
                                 methodItem,
                                 caseId,
-                                testCase.displayName,
+                                caseLabel,
                                 methodUri,
                                 methodRange,
                                 true

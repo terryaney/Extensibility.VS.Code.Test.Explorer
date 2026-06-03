@@ -2,7 +2,7 @@
   "name": "kat-test-explorer",
   "displayName": "KAT Test Explorer",
   "description": "C# test discovery and execution using VS Code Testing API.",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "publisher": "conduent-kat-team",
   "author": {
     "name": "Terry Aney",

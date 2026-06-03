@@ -54,6 +54,7 @@ export function createDebugHandler(
                     'i'
                 );
                 let targetPathFromBuild: string | undefined;
+                const buildBufferedLines: string[] = [];
                 const buildResult = await new Promise<number>((resolve) => {
                     const buildProc = spawn('dotnet', ['build', projectPath, '--configuration', 'Debug'], {
                         cwd: path.dirname(projectPath),
@@ -68,7 +69,7 @@ export function createDebugHandler(
                     buildProc.stdout.on('data', (d: Buffer) => {
                         const text = d.toString();
                         outputChannel.append(text);
-                        run.appendOutput(text.replace(/\n/g, '\r\n'));
+                        buildBufferedLines.push(text);
                         if (!targetPathFromBuild) {
                             const m = buildOutputTargetRe.exec(text);
                             if (m) { targetPathFromBuild = m[1].trim(); }
@@ -77,13 +78,19 @@ export function createDebugHandler(
                     buildProc.stderr.on('data', (d: Buffer) => {
                         const text = d.toString();
                         outputChannel.append(text);
-                        run.appendOutput(text.replace(/\n/g, '\r\n'));
+                        buildBufferedLines.push(text);
                     });
                     buildProc.on('close', (code) => { cancelListener.dispose(); resolve(code ?? 1); });
                     buildProc.on('error', () => { cancelListener.dispose(); resolve(1); });
                 });
 
+                run.appendOutput(`\r\nbuild exited with code ${buildResult}\r\n`);
+
                 if (buildResult !== 0) {
+                    run.appendOutput('\r\n');
+                    for (const chunk of buildBufferedLines) {
+                        run.appendOutput(chunk.replace(/\r?\n/g, '\r\n'));
+                    }
                     const buildFailMsg = token.isCancellationRequested
                         ? 'Build cancelled'
                         : 'Build failed before debug run';
@@ -434,6 +441,13 @@ async function waitForXunitV3Ready(
     const outputLines: string[] = [];
     let pendingLine = '';
 
+    // Patterns for xUnit v3 framework output lines that should be suppressed from the
+    // Test Results pane. Console.WriteLine output from user code is passed through.
+    const xunitResultLineRe = /^\s+(.+?)\s+\[(PASS|FAIL|SKIP)\](?:\s+\(([^)]+)\))?\s*$/;
+    const xunitSummaryRe = /^=== TEST EXECUTION SUMMARY|Total:\s+\d+,\s*Errors:/;
+    // Tracks whether we are inside the indented error-detail block after a [FAIL] line.
+    let inFailBlock = false;
+
     const { ready, processExited } = await new Promise<{ ready: boolean; processExited: Promise<void> }>((resolve) => {
         let resolved = false;
 
@@ -455,11 +469,32 @@ async function waitForXunitV3Ready(
             const combined = pendingLine + text;
             const parts = combined.split(/\r?\n/);
             pendingLine = parts.pop() ?? '';
+
+            const userLines: string[] = [];
             for (const line of parts) {
                 outputLines.push(line);
+
+                // Suppress xUnit framework result lines (they are processed post-run).
+                if (xunitResultLineRe.test(line)) {
+                    inFailBlock = line.includes('[FAIL]');
+                    continue;
+                }
+                // Suppress indented error-detail lines that follow a [FAIL] result.
+                if (inFailBlock && /^\s{4}/.test(line)) {
+                    continue;
+                }
+                inFailBlock = false;
+                // Suppress xUnit execution summary lines.
+                if (xunitSummaryRe.test(line)) {
+                    continue;
+                }
+                userLines.push(line);
             }
 
-            run.appendOutput(text.replace(/\n/g, '\r\n'));
+            if (userLines.length > 0) {
+                run.appendOutput(userLines.join('\r\n') + '\r\n');
+            }
+
             outputChannel.append(text);
             // xUnit v3 prints this when paused waiting for a debugger to attach
             if (!resolved && /Waiting for debugger to be attached/i.test(text)) {
@@ -566,8 +601,13 @@ function applyXunitV3ConsoleResults(
     run: vscode.TestRun,
     expectedItems: vscode.TestItem[]
 ): TestRunSummary {
-    // Build a lookup map: FQN → TestItem and displayName → TestItem
+    // Build lookup maps: FQN → TestItem, metadata.displayName → TestItem, label → TestItem.
+    // metadata.displayName holds the full xUnit display name including parameters
+    // (e.g. "Ns.Class.Method(data: Foo { A = 1 })"), which is what xUnit v3 prints in console
+    // output. After controller.ts changed theory case labels to the short "Method (MemberData N)"
+    // format, itemByLabel no longer matches; itemByDisplayName fills that gap.
     const itemByFqn = new Map<string, vscode.TestItem>();
+    const itemByDisplayName = new Map<string, vscode.TestItem>();
     const itemByLabel = new Map<string, vscode.TestItem>();
     const stack: vscode.TestItem[] = [];
     controller.items.forEach(item => stack.push(item));
@@ -576,6 +616,9 @@ function applyXunitV3ConsoleResults(
         const metadata = getTestMetadata(item);
         if (metadata?.fullyQualifiedName) {
             itemByFqn.set(metadata.fullyQualifiedName, item);
+        }
+        if (metadata?.displayName) {
+            itemByDisplayName.set(metadata.displayName, item);
         }
         itemByLabel.set(item.label, item);
         item.children.forEach(child => stack.push(child));
@@ -598,8 +641,10 @@ function applyXunitV3ConsoleResults(
         const durationStr = match[3];
         const durationMs = parseDurationString(durationStr);
 
-        // Look up the test item by FQN first, then by label
-        const testItem = itemByFqn.get(displayName) ?? itemByLabel.get(displayName);
+        // Look up: FQN (non-theory), then full display name (theory cases), then label (fallback)
+        const testItem = itemByFqn.get(displayName)
+            ?? itemByDisplayName.get(displayName)
+            ?? itemByLabel.get(displayName);
 
         if (!testItem) {
             i++;

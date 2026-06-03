@@ -57,13 +57,19 @@ export async function runDotnetTest(
         }
     }
 
-    // Stream raw output to extension output channel (not Test Results pane)
+    // Buffer stdout/stderr to outputChannel only during execution.
+    // Raw build/restore/runner output is suppressed from the Test Results pane unless the
+    // build fails (no TRX produced), in which case it is surfaced after the exit-code line.
+    const bufferedLines: string[] = [];
+
     const onStdout = (line: string) => {
         outputChannel.append(`${line}\r\n`);
+        bufferedLines.push(line);
     };
 
     const onStderr = (line: string) => {
         outputChannel.append(`${line}\r\n`);
+        bufferedLines.push(line);
     };
 
     // Execute dotnet test
@@ -74,13 +80,20 @@ export async function runDotnetTest(
         token
     });
 
-    // Log exit code
-    if (result.exitCode !== 0) {
-        run.appendOutput(`\r\ndotnet test exited with code ${result.exitCode}\r\n`);
+    const trxFile = findTrxFile(options.resultsDirectory, options.logFilePrefix);
+
+    // Always emit the exit code — this is the visual divider before structured results.
+    run.appendOutput(`\r\ndotnet test exited with code ${result.exitCode}\r\n`);
+
+    // Only surface the raw output when build/restore failed (no TRX produced).
+    if (!trxFile) {
+        run.appendOutput('\r\n');
+        for (const line of bufferedLines) {
+            run.appendOutput(`${line}\r\n`);
+        }
     }
 
-    // Find and return TRX file
-    return findTrxFile(options.resultsDirectory, options.logFilePrefix);
+    return trxFile;
 }
 
 /**

@@ -48,6 +48,7 @@ export interface TestMethodDto {
     isTheory: boolean;
     cases?: TestCaseDto[];
     location: TestLocation;
+    dataAttributeType?: string;
 }
 
 export interface TestCaseDto {

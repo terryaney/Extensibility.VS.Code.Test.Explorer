@@ -378,6 +378,8 @@ public sealed class XunitDiscovery
         var endLine = endLineSpan.EndLinePosition.Line;
         var endColumn = endLineSpan.EndLinePosition.Character;
 
+        var dataAttributeType = isTheory ? GetDataAttributeType(methodDeclaration) : null;
+
         return new DiscoveredTest(
             FullyQualifiedName: fullyQualifiedName,
             FilePath: filePath,
@@ -386,7 +388,31 @@ public sealed class XunitDiscovery
             EndLine: endLine,
             EndColumn: endColumn,
             ProjectPath: projectPath,
-            IsTheory: isTheory);
+            IsTheory: isTheory,
+            DataAttributeType: dataAttributeType);
+    }
+
+    /// <summary>
+    /// Detects which xUnit data-source attribute drives a theory method.
+    /// Returns "InlineData", "MemberData", "ClassData", or "Theory" (fallback).
+    /// A method with mixed types (unusual) also returns "Theory".
+    /// </summary>
+    private static string GetDataAttributeType(MethodDeclarationSyntax methodDeclaration)
+    {
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var attributeList in methodDeclaration.AttributeLists)
+        {
+            foreach (var attribute in attributeList.Attributes)
+            {
+                var name = attribute.Name.ToString();
+                if (IsRawAttributeMatch(name, "InlineData"))        seen.Add("InlineData");
+                else if (IsRawAttributeMatch(name, "MemberData"))   seen.Add("MemberData");
+                else if (IsRawAttributeMatch(name, "ClassData"))    seen.Add("ClassData");
+            }
+        }
+
+        return seen.Count == 1 ? seen.First() : "Theory";
     }
 
     private static Location? GetPreferredMethodStartLocation(MethodDeclarationSyntax methodDeclaration)
@@ -423,4 +449,5 @@ public record DiscoveredTest(
     int EndLine,
     int EndColumn,
     string ProjectPath,
-    bool IsTheory);
+    bool IsTheory,
+    string? DataAttributeType);

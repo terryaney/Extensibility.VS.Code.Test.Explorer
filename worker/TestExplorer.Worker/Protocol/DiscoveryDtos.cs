@@ -37,13 +37,15 @@ public record TestCaseDto(
 /// <param name="Location">Source location of the test method.</param>
 /// <param name="IsTheory">Indicates whether the method is an xUnit theory.</param>
 /// <param name="Cases">Optional discovered theory cases. Null for non-theory or unavailable listing.</param>
+/// <param name="DataAttributeType">The xUnit data-source attribute type ("InlineData", "MemberData", "ClassData", "Theory"). Null for non-theories.</param>
 public record TestMethodDto(
     string Id,
     string Name,
     string FullyQualifiedName,
     TestLocation Location,
     bool IsTheory,
-    IReadOnlyList<TestCaseDto>? Cases);
+    IReadOnlyList<TestCaseDto>? Cases,
+    string? DataAttributeType);
 
 /// <summary>
 /// Represents a test class containing test methods.
