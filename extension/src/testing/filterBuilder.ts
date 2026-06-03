@@ -41,7 +41,7 @@ export function buildVSTestFilter(tests: vscode.TestItem[]): string {
 
             if (metadata.kind === 'case') {
                 const displayName = metadata.displayName ?? item.label;
-                const encodedDisplayName = escapeVSTestFilterValue(displayName);
+                const encodedDisplayName = encodeDisplayNameFilterValue(displayName);
                 filterParts.push(`(FullyQualifiedName=${fqn}&DisplayName=${encodedDisplayName})`);
             } else {
                 filterParts.push(`FullyQualifiedName=${fqn}`);
@@ -72,8 +72,18 @@ function encodeFilterValue(value: string): string {
     return encoded;
 }
 
-function escapeVSTestFilterValue(value: string): string {
+/**
+ * Encodes xUnit DisplayName values for VSTest filters.
+ *
+ * dotnet test expects Name/DisplayName special characters to be URL encoded.
+ * We additionally preserve the existing VSTest operator escaping for grouping
+ * and logical characters that can appear in theory data.
+ */
+function encodeDisplayNameFilterValue(value: string): string {
     return value
+        .replace(/%/g, '%25')
+        .replace(/"/g, '%22')
+        .replace(/,/g, '%2C')
         .replace(/\\/g, '\\\\')
         .replace(/\(/g, '\\(')
         .replace(/\)/g, '\\)')

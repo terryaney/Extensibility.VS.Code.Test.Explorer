@@ -40,7 +40,7 @@ export async function spawnProcess(
     return new Promise<ProcessResult>((resolve, reject) => {
         const childProcess = spawn(command, args, {
             cwd: options.cwd,
-            shell: true,
+            shell: false,
             windowsHide: true
         });
 

@@ -35,25 +35,24 @@ export async function runDotnetTest(
     // Build command line arguments
     const args: string[] = [
         'test',
-        `"${options.projectPath}"`,
+        options.projectPath,
         '--configuration',
         configuration,
         '--logger',
-        `"trx;LogFilePrefix=${options.logFilePrefix}"`,
+        `trx;LogFilePrefix=${options.logFilePrefix}`,
         '--results-directory',
-        `"${options.resultsDirectory}"`
+        options.resultsDirectory
     ];
 
     // Add filter if specified
     if (options.filter) {
-        args.push('--filter', `"${options.filter}"`);
+        args.push('--filter', options.filter);
     }
 
     // Add MSBuild properties if specified
     if (options.msBuildProperties) {
         for (const [key, value] of Object.entries(options.msBuildProperties)) {
-            // Quote the value to handle paths with spaces (shell: true is used by spawnProcess)
-            args.push(`/p:${key}="${value}"`);
+            args.push(`/p:${key}=${value}`);
         }
     }
 
