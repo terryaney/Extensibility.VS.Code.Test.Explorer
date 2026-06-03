@@ -8,7 +8,7 @@ import { WorkerClient } from '../worker/workerClient';
 import { buildVSTestFilter, shouldRunAll } from './filterBuilder';
 import { getProjectPath, getTestMetadata, isLeafRunnableItem } from './testItemStore';
 import { parseTrxFile } from '../results/trxParser';
-import { applyTestResults, TestRunSummary } from '../results/resultMapper';
+import { applyTestResults, appendCaseData, buildTheoryDataBlock, TestRunSummary } from '../results/resultMapper';
 import { findTrxFile } from '../dotnet/dotnetTestRunner';
 
 export function createDebugHandler(
@@ -119,20 +119,33 @@ export function createDebugHandler(
 
                 let pid: number | undefined;
                 let processName: string | undefined;
-                let xunitResult: { ready: boolean; outputLines: string[]; processExited: Promise<void> } | undefined;
 
                 if (useXunitV3Direct) {
-                    // xUnit v3 -waitForDebugger prints "Waiting for debugger to be attached..."
-                    // but does NOT print its PID. Attach by process name instead.
-                    processName = path.basename(exePath!, '.exe');
-                    xunitResult = await waitForXunitV3Ready(exePath!, tests, run, outputChannel, token);
-                    if (!xunitResult.ready) {
-                        outputChannel.appendLine('xUnit v3 process did not become ready for debug attach');
+                    // Theory cases are debugged in isolation via -id (resolved from -list discovery);
+                    // breakpoints only bind on this direct path. The whole spawn/attach/parse sequence
+                    // is run via a helper so it can be retried as a whole-theory debug when the -id
+                    // values match nothing at execution (rows not stably addressable at runtime).
+                    const caseIdMap = await resolveXunitV3CaseIds(exePath!, tests, outputChannel, token);
+                    const trxPath = path.join(resultsDirectory, 'xunit-v3-debug.trx');
+                    const result = await runXunitV3DirectSession(controller, exePath!, tests, caseIdMap, trxPath, run, outputChannel, token, projectStartMs);
+
+                    if (!result.started) {
                         for (const test of tests) {
                             markSelectedLeafRunnableItemsErrored(run, test, 'xUnit v3 test runner did not start');
                         }
-                        continue;
+                    } else if (caseIdMap.size > 0 && result.executed === 0) {
+                        // Safety net: the -id selection ran zero tests. Re-run the whole theory
+                        // (empty id map → -method fallback) so the breakpoint is still reachable.
+                        outputChannel.appendLine('xUnit v3 -id run executed 0 tests; retrying as whole-theory (-method)');
+                        run.appendOutput('\r\n⚠️ Could not isolate the selected theory case at runtime; re-running the entire theory under the debugger (all data rows).\r\n');
+                        const retry = await runXunitV3DirectSession(controller, exePath!, tests, new Map<string, string>(), trxPath, run, outputChannel, token, projectStartMs);
+                        if (!retry.started) {
+                            for (const test of tests) {
+                                markSelectedLeafRunnableItemsErrored(run, test, 'xUnit v3 whole-theory fallback did not start');
+                            }
+                        }
                     }
+                    continue;
                 } else {
                     const logFilePrefix = `debug-run`;
                     const args = [
@@ -279,50 +292,29 @@ export function createDebugHandler(
                 trackerReg?.dispose();
                 outputChannel.appendLine('Debug session ended.');
 
-                if (!useXunitV3Direct) {
-                    // VSTest path: parse TRX for results
-                    await new Promise(r => setTimeout(r, 500));
-                    const logFilePrefix2 = `debug-run`;
-                    const trxFile = findTrxFile(resultsDirectory, logFilePrefix2);
-                    if (trxFile) {
-                        try {
-                            const trxResults = await parseTrxFile(trxFile);
-                            outputChannel.appendLine(`Parsed ${trxResults.length} result(s)`);
-                            const summary = applyTestResults(controller, trxResults, run, outputChannel, tests);
-                            appendSummaryBlock(run, summary, Date.now() - projectStartMs);
-                        } catch (e) {
-                            const msg = e instanceof Error ? e.message : String(e);
-                            for (const test of tests) {
-                                markSelectedLeafRunnableItemsErrored(run, test, `TRX parse error: ${msg}`);
-                            }
-                        }
-                    } else {
-                        outputChannel.appendLine('TRX not found after debug run');
-                        run.appendOutput('\r\n⚠️ Test results file not found — results could not be determined.\r\n');
+                // VSTest path: parse TRX for results. (The xUnit v3 direct path is fully handled
+                // by runXunitV3DirectSession above and never reaches here.)
+                await new Promise(r => setTimeout(r, 500));
+                const logFilePrefix2 = `debug-run`;
+                const trxFile = findTrxFile(resultsDirectory, logFilePrefix2);
+                if (trxFile) {
+                    try {
+                        const trxResults = await parseTrxFile(trxFile);
+                        outputChannel.appendLine(`Parsed ${trxResults.length} result(s)`);
+                        const summary = applyTestResults(controller, trxResults, run, outputChannel, tests);
+                        appendSummaryBlock(run, summary, Date.now() - projectStartMs);
+                    } catch (e) {
+                        const msg = e instanceof Error ? e.message : String(e);
                         for (const test of tests) {
-                            markSelectedLeafRunnableItemsErrored(run, test, 'Test results file (TRX) not found after debug run');
+                            markSelectedLeafRunnableItemsErrored(run, test, `TRX parse error: ${msg}`);
                         }
                     }
                 } else {
-                    // xUnit v3 direct: no TRX produced. Wait for the process to finish
-                    // flushing output (tests run after debugger detaches), then parse the
-                    // console output for pass/fail/skip results instead of blindly marking
-                    // everything as passed.
-                    if (!xunitResult) {
-                        for (const test of tests) {
-                            markSelectedLeafRunnableItemsErrored(run, test, 'xUnit v3 debug result object missing');
-                        }
-                        continue;
+                    outputChannel.appendLine('TRX not found after debug run');
+                    run.appendOutput('\r\n⚠️ Test results file not found — results could not be determined.\r\n');
+                    for (const test of tests) {
+                        markSelectedLeafRunnableItemsErrored(run, test, 'Test results file (TRX) not found after debug run');
                     }
-                    const FLUSH_TIMEOUT_MS = 5000;
-                    await Promise.race([
-                        xunitResult.processExited,
-                        new Promise(r => setTimeout(r, FLUSH_TIMEOUT_MS))
-                    ]);
-                    // Add spacing between raw xUnit process output and normalized per-test results.
-                    run.appendOutput('\r\n\r\n');
-                    const summary = applyXunitV3ConsoleResults(controller, xunitResult.outputLines, run, tests);
-                    appendSummaryBlock(run, summary, Date.now() - projectStartMs);
                 }
             }
 
@@ -405,6 +397,227 @@ function getProjectTargetPath(
     });
 }
 
+/** One entry from `<exe> -list full/json` (xUnit ConsoleProjectLister.Full). */
+interface DiscoveredCase {
+    DisplayName?: string;
+    ID?: string;
+    Class?: string;
+    Method?: string;
+}
+
+/**
+ * Resolves the xUnit unique ID for each selected theory case so it can be debugged in isolation
+ * via the runner's `-id` option. xUnit computes these IDs at runtime, so they are not available
+ * from the Roslyn-based discovery worker; we obtain them just-in-time by invoking the built test
+ * executable with `-list full/json` scoped (via `-method`) to each selected theory.
+ *
+ * Match is by xUnit DisplayName (stored in metadata.displayName, which matches xUnit's runtime
+ * display name). Cases with no unique single match are omitted; the caller falls back to `-method`.
+ */
+async function resolveXunitV3CaseIds(
+    exePath: string,
+    tests: vscode.TestItem[],
+    outputChannel: vscode.OutputChannel,
+    token: vscode.CancellationToken
+): Promise<Map<string, string>> {
+    const result = new Map<string, string>();
+
+    // Group selected theory-case items by parent method FQN so discovery can be scoped per theory.
+    const casesByMethod = new Map<string, vscode.TestItem[]>();
+    for (const test of tests) {
+        const metadata = getTestMetadata(test);
+        if (metadata?.kind === 'case' && metadata.fullyQualifiedName) {
+            const list = casesByMethod.get(metadata.fullyQualifiedName) ?? [];
+            list.push(test);
+            casesByMethod.set(metadata.fullyQualifiedName, list);
+        }
+    }
+    if (casesByMethod.size === 0) {
+        return result;
+    }
+
+    for (const [methodFqn, caseItems] of Array.from(casesByMethod.entries())) {
+        if (token.isCancellationRequested) { break; }
+        // `-list full/json` lists every discovered test case as JSON (DisplayName + ID = UniqueID);
+        // `-method` scopes discovery to this one theory. JSON format implies -noLogo.
+        // `-preEnumerateTheories` (valueless flag) forces the in-process runner to expand theory
+        // data rows at discovery so each row gets its own DisplayName + stable unique ID; without
+        // it the runner returns a single un-enumerated entry for the whole theory.
+        const args = ['-list', 'full/json', '-preEnumerateTheories', '-method', methodFqn];
+        outputChannel.appendLine(`Resolving theory case IDs: ${path.basename(exePath)} ${args.join(' ')}`);
+        const discovered = await runXunitV3Discovery(exePath, args, outputChannel, token);
+        if (!discovered) { continue; }
+        outputChannel.appendLine(`Discovered ${discovered.length} case(s) for ${methodFqn}`);
+
+        for (const caseItem of caseItems) {
+            const displayName = getTestMetadata(caseItem)?.displayName;
+            if (!displayName) { continue; }
+            const matches = discovered.filter(d => d.DisplayName === displayName);
+            if (matches.length === 1 && matches[0].ID) {
+                result.set(caseItem.id, matches[0].ID);
+            } else {
+                // 0 matches, or ambiguous duplicate display names → let the caller fall back to -method.
+                outputChannel.appendLine(`No unique ID match for case display name '${displayName}' in ${methodFqn} (matches: ${matches.length})`);
+            }
+        }
+    }
+
+    return result;
+}
+
+/**
+ * Invokes the xUnit v3 test executable in `-list` mode and parses the JSON test-case array.
+ * Returns undefined on spawn error, timeout, cancellation, or unparseable output.
+ */
+function runXunitV3Discovery(
+    exePath: string,
+    args: string[],
+    outputChannel: vscode.OutputChannel,
+    token: vscode.CancellationToken
+): Promise<DiscoveredCase[] | undefined> {
+    return new Promise((resolve) => {
+        let stdout = '';
+        let stderr = '';
+        let settled = false;
+        const finish = (value: DiscoveredCase[] | undefined) => {
+            if (settled) { return; }
+            settled = true;
+            resolve(value);
+        };
+
+        const child = spawn(exePath, args, { cwd: path.dirname(exePath), shell: false });
+        child.stdout.on('data', (d: Buffer) => { stdout += d.toString(); });
+        child.stderr.on('data', (d: Buffer) => { stderr += d.toString(); });
+        child.on('error', (err) => {
+            outputChannel.appendLine(`xUnit v3 -list discovery error: ${err.message}`);
+            finish(undefined);
+        });
+        child.on('close', () => {
+            const parsed = parseDiscoveryJson(stdout);
+            if (!parsed) {
+                outputChannel.appendLine(`Could not parse -list output${stderr.trim() ? `; stderr: ${stderr.trim()}` : ''}`);
+            }
+            finish(parsed);
+        });
+        token.onCancellationRequested(() => { child.kill(); finish(undefined); });
+        setTimeout(() => {
+            if (!settled) {
+                outputChannel.appendLine('Timeout during xUnit v3 -list discovery');
+                child.kill();
+                finish(undefined);
+            }
+        }, 30000);
+    });
+}
+
+/** Extracts and parses the JSON array emitted by `-list full/json`, tolerating stray output. */
+function parseDiscoveryJson(output: string): DiscoveredCase[] | undefined {
+    const start = output.indexOf('[');
+    const end = output.lastIndexOf(']');
+    if (start < 0 || end <= start) { return undefined; }
+    try {
+        const arr = JSON.parse(output.substring(start, end + 1));
+        return Array.isArray(arr) ? arr as DiscoveredCase[] : undefined;
+    } catch {
+        return undefined;
+    }
+}
+
+/**
+ * Runs one xUnit v3 direct debug session: spawn (-waitForDebugger), attach by process name,
+ * wait for the session to end, then apply results (preferring the TRX written via -trx, which
+ * yields real per-test outcome/duration and theory data; console parsing is the fallback).
+ * Returns whether the runner started and how many tests actually executed — the caller uses the
+ * executed count to retry as a whole-theory debug when an -id selection ran nothing.
+ */
+async function runXunitV3DirectSession(
+    controller: vscode.TestController,
+    exePath: string,
+    tests: vscode.TestItem[],
+    caseIdMap: Map<string, string>,
+    trxPath: string,
+    run: vscode.TestRun,
+    outputChannel: vscode.OutputChannel,
+    token: vscode.CancellationToken,
+    projectStartMs: number
+): Promise<{ started: boolean; executed: number }> {
+    // Remove any TRX from a previous attempt so a stale file isn't mistaken for this run's results.
+    try { if (fs.existsSync(trxPath)) { fs.rmSync(trxPath); } } catch { /* ignore */ }
+
+    // xUnit v3 -waitForDebugger does NOT print its PID, so attach by process name.
+    const processName = path.basename(exePath, '.exe');
+    const xunitResult = await waitForXunitV3Ready(exePath, tests, caseIdMap, trxPath, run, outputChannel, token);
+    if (!xunitResult.ready) {
+        outputChannel.appendLine('xUnit v3 process did not become ready for debug attach');
+        return { started: false, executed: 0 };
+    }
+
+    const SESSION_NAME = `KAT C# Test Explorer: Attach (${processName})`;
+    outputChannel.appendLine(`Attaching debugger to: ${processName}`);
+    run.appendOutput(`\r\nAttaching debugger to process '${processName}'...\r\n`);
+
+    const attachConfig: vscode.DebugConfiguration = {
+        type: 'coreclr',
+        name: SESSION_NAME,
+        request: 'attach',
+        processName,
+        justMyCode: true,
+        requireExactSource: false,
+        suppressJITOptimizations: true
+    };
+
+    const started = await vscode.debug.startDebugging(undefined, attachConfig, { testRun: run });
+    if (!started) {
+        outputChannel.appendLine('Failed to start attach debug session');
+        return { started: false, executed: 0 };
+    }
+
+    // Wait for the debug session to end.
+    await new Promise<void>((resolve) => {
+        const disposable = vscode.debug.onDidTerminateDebugSession((session) => {
+            if (session.name === SESSION_NAME) { disposable.dispose(); resolve(); }
+        });
+        token.onCancellationRequested(() => {
+            const sessionToStop = vscode.debug.sessions.find(s => s.name === SESSION_NAME);
+            if (sessionToStop) { vscode.debug.stopDebugging(sessionToStop); }
+            disposable.dispose();
+            resolve();
+        });
+    });
+    outputChannel.appendLine('Debug session ended.');
+
+    // Tests run after the debugger detaches; wait for the process to flush and write its TRX.
+    const FLUSH_TIMEOUT_MS = 5000;
+    await Promise.race([
+        xunitResult.processExited,
+        new Promise(r => setTimeout(r, FLUSH_TIMEOUT_MS))
+    ]);
+    run.appendOutput('\r\n\r\n');
+
+    let summary: TestRunSummary | undefined;
+    let executed = 0;
+    if (fs.existsSync(trxPath)) {
+        try {
+            const trxResults = await parseTrxFile(trxPath);
+            outputChannel.appendLine(`Parsed ${trxResults.length} result(s) from xUnit v3 TRX`);
+            executed = trxResults.length;
+            summary = applyTestResults(controller, trxResults, run, outputChannel, tests);
+        } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e);
+            outputChannel.appendLine(`xUnit v3 TRX parse failed (${msg}); falling back to console parsing`);
+        }
+    } else {
+        outputChannel.appendLine('xUnit v3 TRX not found; using console output parsing');
+    }
+    if (!summary) {
+        summary = applyXunitV3ConsoleResults(controller, xunitResult.outputLines, run, tests);
+        executed = summary.passed + summary.failed;
+    }
+    appendSummaryBlock(run, summary, Date.now() - projectStartMs);
+
+    return { started: true, executed };
+}
+
 /**
  * Spawns the xUnit v3 project executable directly with -waitForDebugger.
  * xUnit v3 prints "Waiting for debugger to be attached..." when ready.
@@ -414,15 +627,42 @@ function getProjectTargetPath(
 async function waitForXunitV3Ready(
     exePath: string,
     tests: vscode.TestItem[],
+    caseIdMap: Map<string, string>,
+    trxPath: string,
     run: vscode.TestRun,
     outputChannel: vscode.OutputChannel,
     token: vscode.CancellationToken
 ): Promise<{ ready: boolean; outputLines: string[]; processExited: Promise<void> }> {
-    const args: string[] = ['-waitForDebugger'];
+    // -trx writes standard TRX so results map through the existing applyTestResults path.
+    const args: string[] = ['-waitForDebugger', '-trx', trxPath];
+    // Dedup -id (per resolved theory case) and -method (per theory/method) so a method is
+    // never launched more than once when multiple of its rows are selected.
+    const seenIds = new Set<string>();
+    const seenMethods = new Set<string>();
     for (const test of tests) {
         const metadata = getTestMetadata(test);
-        if (metadata) {
-            args.push('-method', metadata.fullyQualifiedName);
+        if (metadata?.kind === 'case') {
+            // Theory case: run exactly this data row by its xUnit unique ID. See CommandLine.cs
+            // (-id "run a test case (by unique ID)"). IDs are resolved via -list full/json.
+            const uniqueId = caseIdMap.get(test.id);
+            if (uniqueId) {
+                if (!seenIds.has(uniqueId)) {
+                    seenIds.add(uniqueId);
+                    args.push('-id', uniqueId);
+                }
+            } else if (!seenMethods.has(metadata.fullyQualifiedName)) {
+                // Fallback: no unique ID (e.g. non-pre-enumerable theory) → debug the whole
+                // theory method. Breakpoints still bind, but every data row runs.
+                seenMethods.add(metadata.fullyQualifiedName);
+                args.push('-method', metadata.fullyQualifiedName);
+                outputChannel.appendLine(`Could not resolve unique ID for case '${metadata.displayName ?? test.label}'; debugging entire theory '${metadata.fullyQualifiedName}' (all data rows).`);
+                run.appendOutput(`\r\n⚠️ Could not isolate the selected theory case; debugging all data rows of ${metadata.fullyQualifiedName}.\r\n`);
+            }
+        } else if (metadata) {
+            if (!seenMethods.has(metadata.fullyQualifiedName)) {
+                seenMethods.add(metadata.fullyQualifiedName);
+                args.push('-method', metadata.fullyQualifiedName);
+            }
         } else {
             // ID formats: projectPath|cls|FQN (3 parts) or projectPath|ns|Name (3 parts)
             const parts = test.id.split('|');
@@ -433,6 +673,12 @@ async function waitForXunitV3Ready(
                 outputChannel.appendLine(`Warning: namespace-level filter not supported for xUnit v3 direct; running all`);
             }
         }
+    }
+    if (seenIds.size > 0) {
+        // The -id values were computed from pre-enumerated theory rows during discovery. The
+        // execution run must pre-enumerate the same way, otherwise the theory enumerates
+        // differently at runtime and the row unique IDs won't match (yielding "Total: 0").
+        args.push('-preEnumerateTheories');
     }
     outputChannel.appendLine(`Spawning (xUnit v3 direct): ${exePath} ${args.join(' ')}`);
 
@@ -656,11 +902,13 @@ function applyXunitV3ConsoleResults(
             appliedItems.add(testItem.id);
             appliedOutcomes.set(testItem.id, 'passed');
             run.appendOutput(`✅ PASSED: ${displayName} (${formatDuration(durationMs)})\r\n`);
+            appendCaseData(testItem, run);
         } else if (outcome === 'SKIP') {
             run.skipped(testItem);
             appliedItems.add(testItem.id);
             appliedOutcomes.set(testItem.id, 'skipped');
             run.appendOutput(`⏭️ SKIPPED: ${displayName} (N/A)\r\n`);
+            appendCaseData(testItem, run);
         } else {
             // Collect error lines — indented 4+ spaces, until next result or end
             i++;
@@ -670,7 +918,10 @@ function applyXunitV3ConsoleResults(
                 i++;
             }
             const errorText = errorLines.join('\n').trim() || 'Test failed';
-            run.failed(testItem, new vscode.TestMessage(errorText), durationMs);
+            // Prepend the theory data block so the failing data row is visible on a single click.
+            const theoryBlock = buildTheoryDataBlock(testItem);
+            const message = theoryBlock ? `${theoryBlock}\n\n${errorText}` : errorText;
+            run.failed(testItem, new vscode.TestMessage(message), durationMs);
             appliedItems.add(testItem.id);
             appliedOutcomes.set(testItem.id, 'failed');
             run.appendOutput(`❌ FAILED: ${displayName} (${formatDuration(durationMs)})\r\n`);
@@ -710,7 +961,8 @@ function applyXunitV3ConsoleResults(
         appliedItems.add(item.id);
         appliedOutcomes.set(item.id, 'passed');
         const metadata = getTestMetadata(item);
-        run.appendOutput(`✅ PASSED: ${metadata?.fullyQualifiedName ?? item.label} (inferred from xUnit execution summary)\r\n`);
+        run.appendOutput(`✅ PASSED: ${metadata?.displayName ?? metadata?.fullyQualifiedName ?? item.label} (inferred from xUnit execution summary)\r\n`);
+        appendCaseData(item, run);
         inferredPass--;
     }
 
@@ -720,7 +972,8 @@ function applyXunitV3ConsoleResults(
         appliedItems.add(item.id);
         appliedOutcomes.set(item.id, 'skipped');
         const metadata = getTestMetadata(item);
-        run.appendOutput(`⏭️ SKIPPED: ${metadata?.fullyQualifiedName ?? item.label} (inferred from xUnit execution summary)\r\n`);
+        run.appendOutput(`⏭️ SKIPPED: ${metadata?.displayName ?? metadata?.fullyQualifiedName ?? item.label} (inferred from xUnit execution summary)\r\n`);
+        appendCaseData(item, run);
         inferredSkip--;
     }
 
@@ -732,7 +985,8 @@ function applyXunitV3ConsoleResults(
         appliedItems.add(item.id);
         appliedOutcomes.set(item.id, 'skipped');
         const metadata = getTestMetadata(item);
-        run.appendOutput(`⏭️ SKIPPED: ${metadata?.fullyQualifiedName ?? item.label} (no explicit xUnit result line)\r\n`);
+        run.appendOutput(`⏭️ SKIPPED: ${metadata?.displayName ?? metadata?.fullyQualifiedName ?? item.label} (no explicit xUnit result line)\r\n`);
+        appendCaseData(item, run);
     }
 
     const summary: TestRunSummary = {
@@ -918,12 +1172,8 @@ function getXunitV3DirectSelectionSupport(tests: readonly vscode.TestItem[]): { 
 
     for (const test of tests) {
         const metadata = getTestMetadata(test);
-        if (metadata?.kind === 'method') {
-            continue;
-        }
-
-        if (metadata?.kind === 'case') {
-            unsupportedReasons.add('explicit case selections require VSTest fallback');
+        if (metadata?.kind === 'method' || metadata?.kind === 'case') {
+            // Methods run via -method; individual theory cases run via -id (resolved at debug time).
             continue;
         }
 

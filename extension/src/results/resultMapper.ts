@@ -166,7 +166,7 @@ function buildResultOutputName(testItem: vscode.TestItem, fqn: string): string {
  * For passed theory cases: writes the formatted theory data to the item's
  * output channel (visible via "Show Test Output").
  */
-function appendCaseData(testItem: vscode.TestItem, run: vscode.TestRun): void {
+export function appendCaseData(testItem: vscode.TestItem, run: vscode.TestRun): void {
     const metadata = getTestMetadata(testItem);
     if (metadata?.kind !== 'case' || !metadata.displayName) return;
     const raw = extractParamDescription(metadata.displayName, metadata.fullyQualifiedName);
@@ -198,7 +198,7 @@ function applyFailedResult(testItem: vscode.TestItem, result: TrxTestResult, run
     run.failed(testItem, testMessage, result.duration);
 }
 
-function buildTheoryDataBlock(testItem: vscode.TestItem): string | undefined {
+export function buildTheoryDataBlock(testItem: vscode.TestItem): string | undefined {
     const metadata = getTestMetadata(testItem);
     if (metadata?.kind !== 'case' || !metadata.displayName) return undefined;
     const raw = extractParamDescription(metadata.displayName, metadata.fullyQualifiedName);
