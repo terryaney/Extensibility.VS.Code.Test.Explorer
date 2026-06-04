@@ -85,7 +85,7 @@ export class WorkerClient {
         }
 
         // Development paths
-        const devWorkerBasePath = path.join(extensionDir, '..', 'worker', 'TestExplorer.Worker', 'bin', 'Debug', 'net8.0');
+        const devWorkerBasePath = path.join(extensionDir, '..', 'worker', 'TestExplorer.Worker', 'bin', 'Debug', 'net10.0');
         
         // Try .exe first (Windows, development)
         const devExePath = path.join(devWorkerBasePath, 'TestExplorer.Worker.exe');

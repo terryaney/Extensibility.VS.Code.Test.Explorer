@@ -4,7 +4,7 @@ A VS Code extension for C# test discovery and execution using the VS Code Testin
 
 ## Requirements
 
-- .NET 8 SDK or later
+- .NET 10 SDK or later
 - VS Code 1.88.0 or later
 - [C# extension](https://marketplace.visualstudio.com/items?itemName=ms-dotnettools.csharp) (installed automatically as a dependency)
 
@@ -57,6 +57,7 @@ Install [previous versions](#previous-versions) of the extension if needed.
 
 ## Previous Versions
 
+1. [1.0.9](https://github.com/terryaney/Extensibility.VS.Code.Test.Explorer/raw/main/dist/kat-test-explorer-1.0.9.vsix)
 1. [1.0.8](https://github.com/terryaney/Extensibility.VS.Code.Test.Explorer/raw/main/dist/kat-test-explorer-1.0.8.vsix)
 1. [1.0.7](https://github.com/terryaney/Extensibility.VS.Code.Test.Explorer/raw/main/dist/kat-test-explorer-1.0.7.vsix)
 1. [1.0.5](https://github.com/terryaney/Extensibility.VS.Code.Test.Explorer/raw/main/dist/kat-test-explorer-1.0.5.vsix)
