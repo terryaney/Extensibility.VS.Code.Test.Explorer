@@ -124,7 +124,7 @@ function applyResultToItem(
             summary.passed++;
             run.appendOutput(`✅ PASSED: ${outName} (${formatDuration(result.duration)})\r\n`);
             appendCaseData(testItem, run);
-            if (result.stdOut) run.appendOutput(result.stdOut.replace(/\r?\n/g, '\r\n'), undefined, testItem);
+            if (result.stdOut) appendStdOut(result.stdOut, run, testItem);
             break;
 
         case 'Failed':
@@ -133,7 +133,7 @@ function applyResultToItem(
             summary.failed++;
             run.appendOutput(`❌ FAILED: ${outName} (${formatDuration(result.duration)})\r\n`);
             appendCaseData(testItem, run);
-            if (result.stdOut) run.appendOutput(result.stdOut.replace(/\r?\n/g, '\r\n'), undefined, testItem);
+            if (result.stdOut) appendStdOut(result.stdOut, run, testItem);
             break;
 
         case 'Skipped':
@@ -160,6 +160,12 @@ function buildResultOutputName(testItem: vscode.TestItem, fqn: string): string {
     if (metadata?.kind !== 'case') return fqn;
     const m = testItem.label.match(/\(([^)]+)\)$/);
     return m ? `${fqn} - ${m[1]}` : fqn;
+}
+
+function appendStdOut(stdOut: string, run: vscode.TestRun, testItem: vscode.TestItem): void {
+    let normalized = stdOut.replace(/\r?\n/g, '\r\n');
+    if (!normalized.endsWith('\r\n')) normalized += '\r\n';
+    run.appendOutput(normalized, undefined, testItem);
 }
 
 /**

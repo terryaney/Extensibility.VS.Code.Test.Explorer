@@ -608,7 +608,7 @@ namespace TestExplorer.Worker
                 foreach (var displayName in displayNames)
                 {
                     var matchedMethod = theoryMethods.FirstOrDefault(method =>
-                        displayName.StartsWith(method, StringComparison.Ordinal));
+                        IsTheoryDisplayNameMatch(method, displayName));
 
                     if (matchedMethod == null)
                     {
@@ -682,6 +682,24 @@ namespace TestExplorer.Worker
             var normalized = value.TrimStart();
             normalized = normalized.TrimStart('-', '*', '•', '>');
             return normalized.Trim();
+        }
+
+        private static bool IsTheoryDisplayNameMatch(string methodFullyQualifiedName, string displayName)
+        {
+            if (!displayName.StartsWith(methodFullyQualifiedName, StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            if (displayName.Length == methodFullyQualifiedName.Length)
+            {
+                return true;
+            }
+
+            // xUnit row display names are typically "MethodName(...)"; requiring a boundary
+            // avoids accidental prefix matches with sibling methods like "MethodName_Other".
+            var boundary = displayName[methodFullyQualifiedName.Length];
+            return boundary == '(';
         }
 
         private static bool LooksLikeTestDisplayName(string value)
