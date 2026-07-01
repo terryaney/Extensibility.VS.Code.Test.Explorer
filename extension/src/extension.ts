@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
-import { createTestController, discoverAsync, clearTests, buildTestTree, mergeProjectResults, mergeFileResults, countLeafTestItems, runTestItem, debugTestItem } from './testing/controller';
+import { createTestController, discoverAsync, clearTests, buildTestTree, mergeProjectResults, mergeFileResults, countLeafTestItems, runTestItem, debugTestItem, getKnownProjectPaths } from './testing/controller';
+import { buildProjects } from './dotnet/dotnetTestRunner';
 import { WorkerClient } from './worker/workerClient';
 import { logError, logInfo } from './logging/outputChannel';
 
@@ -165,6 +166,10 @@ export async function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(
         vscode.commands.registerCommand('test-explorer.refreshTests', async () => {
             logInfo(outputChannel, 'Manual refresh requested');
+            const projectPaths = getKnownProjectPaths(controller);
+            if (projectPaths.length > 0) {
+                await buildProjects(projectPaths, outputChannel, statusBarItem);
+            }
             clearTests(controller, testCountStatusBar);
             await discoverAsync(controller, workerClient, outputChannel, statusBarItem, testCountStatusBar);
         })

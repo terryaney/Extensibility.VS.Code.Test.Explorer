@@ -9,6 +9,8 @@ import { getProjectPath, isLeafRunnableItem } from './testItemStore';
 import { runDotnetTest } from '../dotnet/dotnetTestRunner';
 import { parseTrxFile } from '../results/trxParser';
 import { applyTestResults, TestRunSummary } from '../results/resultMapper';
+import { TrxTestResult } from '../results/trxParser';
+import { TestProjectDto } from '../worker/protocol';
 
 /**
  * Creates a run handler for executing tests.
@@ -21,7 +23,8 @@ import { applyTestResults, TestRunSummary } from '../results/resultMapper';
 export function createRunHandler(
     controller: vscode.TestController,
     workerClient: WorkerClient,
-    outputChannel: vscode.OutputChannel
+    outputChannel: vscode.OutputChannel,
+    mergeProject: (project: TestProjectDto) => void
 ): (request: vscode.TestRunRequest, token: vscode.CancellationToken) => Promise<void> {
     
     return async (request: vscode.TestRunRequest, token: vscode.CancellationToken) => {
@@ -67,7 +70,6 @@ export function createRunHandler(
                 if (runningAll) {
                     outputChannel.appendLine(`\nRunning all tests in project: ${projectPath}`);
                     
-                    // Mark all tests in project as enqueued
                     markProjectTests(run, tests[0], 'enqueued');
                     
                     // Execute dotnet test without filter
@@ -90,10 +92,14 @@ export function createRunHandler(
                         outputChannel.appendLine(`TRX file generated: ${trxFile}`);
                         
                         try {
-                            // Parse TRX file and apply results
+                            // Parse TRX file and apply results.
+                            // Apply first so removed items (not in TRX) are marked skipped
+                            // while they're still in the tree; then sync additions if any.
                             const trxResults = await parseTrxFile(trxFile);
                             outputChannel.appendLine(`Parsed ${trxResults.length} test result(s) from TRX`);
-                            const summary = applyTestResults(controller, trxResults, run, outputChannel, tests);
+                            const { summary, unmatchedResults, hadRemovals } = applyTestResults(controller, trxResults, run, outputChannel);
+                            const addedSummary = await syncTree(workerClient, projectPath, unmatchedResults, hadRemovals, controller, run, outputChannel, mergeProject);
+                            if (addedSummary) mergeSummary(summary, addedSummary);
                             projectSummaries.push({ projectName: path.basename(projectPath), summary, totalTimeMs });
                             appendSummaryBlock(
                                 run,
@@ -112,16 +118,15 @@ export function createRunHandler(
                         // Mark all tests as errored if TRX not found
                         markProjectTests(run, tests[0], 'errored');
                     }
-                    
+
                 } else {
                     // Build filter expression for selected tests
                     const filter = buildVSTestFilter(tests);
                     outputChannel.appendLine(`\nRunning filtered tests in project: ${projectPath}`);
                     outputChannel.appendLine(`Filter: ${filter}`);
                     
-                    // Mark tests as enqueued
                     for (const test of tests) {
-                        enqueueSelectedLeafRunnableItems(run, test);
+                        markProjectTests(run, test, 'enqueued');
                     }
                     
                     // Execute dotnet test with filter
@@ -145,10 +150,14 @@ export function createRunHandler(
                         outputChannel.appendLine(`TRX file generated: ${trxFile}`);
                         
                         try {
-                            // Parse TRX file and apply results
+                            // Parse TRX file and apply results.
+                            // Apply first so removed items (not in TRX) are marked skipped
+                            // while they're still in the tree; then sync additions if any.
                             const trxResults = await parseTrxFile(trxFile);
                             outputChannel.appendLine(`Parsed ${trxResults.length} test result(s) from TRX`);
-                            const summary = applyTestResults(controller, trxResults, run, outputChannel, tests);
+                            const { summary, unmatchedResults, hadRemovals } = applyTestResults(controller, trxResults, run, outputChannel);
+                            const addedSummary = await syncTree(workerClient, projectPath, unmatchedResults, hadRemovals, controller, run, outputChannel, mergeProject);
+                            if (addedSummary) mergeSummary(summary, addedSummary);
                             projectSummaries.push({ projectName: path.basename(projectPath), summary, totalTimeMs });
                             appendSummaryBlock(
                                 run,
@@ -218,6 +227,56 @@ export function createRunHandler(
 }
 
 /**
+ * After applying results, syncs the tree when there are discrepancies:
+ * - Removals (hadRemovals): re-discovers so stale case nodes are pruned from the tree.
+ * - Additions (unmatchedResults): re-discovers, merges new nodes, applies unmatched results.
+ * Returns an additional summary for any newly applied addition results.
+ */
+async function syncTree(
+    workerClient: WorkerClient,
+    projectPath: string,
+    unmatchedResults: TrxTestResult[],
+    hadRemovals: boolean,
+    controller: vscode.TestController,
+    run: vscode.TestRun,
+    outputChannel: vscode.OutputChannel,
+    mergeProject: (project: TestProjectDto) => void
+): Promise<TestRunSummary | undefined> {
+    if (unmatchedResults.length === 0 && !hadRemovals) return undefined;
+
+    const reason = [
+        unmatchedResults.length > 0 ? `${unmatchedResults.length} unmatched result(s)` : '',
+        hadRemovals ? 'removed case(s) detected' : ''
+    ].filter(Boolean).join(', ');
+    outputChannel.appendLine(`[TreeSync] ${reason} — re-discovering ${projectPath}`);
+
+    const folderPaths = vscode.workspace.workspaceFolders?.map(f => f.uri.fsPath) ?? [];
+    try {
+        const updatedProjects = await workerClient.discover(folderPaths);
+        const updated = updatedProjects.find(p => p.projectPath === projectPath);
+        if (updated) {
+            mergeProject(updated);
+            outputChannel.appendLine(`[TreeSync] Tree updated for ${projectPath}`);
+            if (unmatchedResults.length > 0) {
+                const { summary } = applyTestResults(controller, unmatchedResults, run, outputChannel);
+                return summary;
+            }
+        }
+    } catch (err) {
+        outputChannel.appendLine(`[TreeSync] Re-discovery failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    return undefined;
+}
+
+function mergeSummary(target: TestRunSummary, source: TestRunSummary): void {
+    target.passed += source.passed;
+    target.failed += source.failed;
+    target.skipped += source.skipped;
+    target.total += source.total;
+    target.executionTimeMs += source.executionTimeMs;
+}
+
+/**
  * Gets all test items from the controller.
  * 
  * @param controller The test controller
@@ -281,9 +340,7 @@ function markProjectTests(
 ): void {
     // Apply state based on type
     if (state === 'enqueued') {
-        if (isLeafRunnableItem(projectItem)) {
-            run.enqueued(projectItem);
-        }
+        run.enqueued(projectItem);
     } else if (state === 'passed') {
         run.passed(projectItem);
     } else if (state === 'errored') {
@@ -298,20 +355,6 @@ function markProjectTests(
     });
 }
 
-function enqueueTestAndAncestors(run: vscode.TestRun, test: vscode.TestItem): void {
-    run.enqueued(test);
-}
-
-function enqueueSelectedLeafRunnableItems(run: vscode.TestRun, test: vscode.TestItem): void {
-    if (isLeafRunnableItem(test)) {
-        enqueueTestAndAncestors(run, test);
-        return;
-    }
-
-    test.children.forEach(child => {
-        enqueueSelectedLeafRunnableItems(run, child);
-    });
-}
 
 function appendSummaryBlock(
     run: vscode.TestRun,

@@ -31,7 +31,7 @@ export async function runDotnetTest(
     token?: vscode.CancellationToken
 ): Promise<string | undefined> {
     const configuration = options.configuration || 'Debug';
-    
+
     // Build command line arguments
     const args: string[] = [
         'test',
@@ -93,6 +93,34 @@ export async function runDotnetTest(
     }
 
     return trxFile;
+}
+
+/**
+ * Runs dotnet build on each project before test discovery to ensure compiled
+ * assemblies are current (required for theory case enumeration).
+ */
+export async function buildProjects(
+    projectPaths: string[],
+    outputChannel: vscode.OutputChannel,
+    statusBarItem: vscode.StatusBarItem
+): Promise<void> {
+    statusBarItem.text = '$(sync~spin) Building test projects...';
+    statusBarItem.show();
+
+    for (const projectPath of projectPaths) {
+        outputChannel.appendLine(`[Build] dotnet build "${projectPath}" --configuration Debug`);
+        const result = await spawnProcess('dotnet', ['build', projectPath, '--configuration', 'Debug'], {
+            cwd: path.dirname(projectPath),
+            onStdout: (line) => outputChannel.appendLine(line),
+            onStderr: (line) => outputChannel.appendLine(line)
+        });
+        outputChannel.appendLine(`[Build] Exit code: ${result.exitCode}`);
+        if (result.exitCode !== 0) {
+            vscode.window.showWarningMessage(
+                `Build failed for ${path.basename(projectPath)} — theory cases may be stale. See KAT C# Test Explorer output for details.`
+            );
+        }
+    }
 }
 
 /**

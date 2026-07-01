@@ -87,7 +87,7 @@ export function createCoverageHandler(
                     if (trxFile) {
                         try {
                             const trxResults = await parseTrxFile(trxFile);
-                            const summary = applyTestResults(controller, trxResults, run, outputChannel, tests);
+                            const { summary } = applyTestResults(controller, trxResults, run, outputChannel);
                             projectSummaries.push({ projectName: path.basename(projectPath), summary, totalTimeMs });
                             appendSummaryBlock(run, summary, totalTimeMs, hasMultipleProjects ? path.basename(projectPath) : undefined);
                         } catch (parseError) {
@@ -105,7 +105,7 @@ export function createCoverageHandler(
                     outputChannel.appendLine(`Filter: ${filter}`);
 
                     for (const test of tests) {
-                        enqueueSelectedLeafRunnableItems(run, test);
+                        markProjectTests(run, test, 'enqueued');
                     }
 
                     const invocationStart = Date.now();
@@ -120,7 +120,7 @@ export function createCoverageHandler(
                     if (trxFile) {
                         try {
                             const trxResults = await parseTrxFile(trxFile);
-                            const summary = applyTestResults(controller, trxResults, run, outputChannel, tests);
+                            const { summary } = applyTestResults(controller, trxResults, run, outputChannel);
                             projectSummaries.push({ projectName: path.basename(projectPath), summary, totalTimeMs });
                             appendSummaryBlock(run, summary, totalTimeMs, hasMultipleProjects ? path.basename(projectPath) : undefined);
                         } catch (parseError) {
@@ -228,19 +228,11 @@ function groupTestsByProject(tests: readonly vscode.TestItem[]): Map<string, vsc
 
 function markProjectTests(run: vscode.TestRun, item: vscode.TestItem, state: 'enqueued' | 'errored'): void {
     if (state === 'enqueued') {
-        if (isLeafRunnableItem(item)) { run.enqueued(item); }
-    } else {
-        if (isLeafRunnableItem(item)) { run.errored(item, new vscode.TestMessage('Test execution failed')); }
+        run.enqueued(item);
+    } else if (isLeafRunnableItem(item)) {
+        run.errored(item, new vscode.TestMessage('Test execution failed'));
     }
     item.children.forEach(child => markProjectTests(run, child, state));
-}
-
-function enqueueSelectedLeafRunnableItems(run: vscode.TestRun, test: vscode.TestItem): void {
-    if (isLeafRunnableItem(test)) {
-        run.enqueued(test);
-        return;
-    }
-    test.children.forEach(child => enqueueSelectedLeafRunnableItems(run, child));
 }
 
 function appendSummaryBlock(run: vscode.TestRun, summary: TestRunSummary, totalTimeMs: number, projectName?: string): void {

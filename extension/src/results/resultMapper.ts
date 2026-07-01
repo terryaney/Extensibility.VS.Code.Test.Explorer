@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { TrxTestResult } from './trxParser';
-import { clearErrorLocation, getTestMetadata, isLeafRunnableItem, setErrorLocation } from '../testing/testItemStore';
+import { clearErrorLocation, getTestMetadata, setErrorLocation } from '../testing/testItemStore';
 
 export interface TestRunSummary {
     passed: number;
@@ -11,13 +11,20 @@ export interface TestRunSummary {
     executionTimeMs: number;
 }
 
+export interface ApplyTestResultsResult {
+    summary: TestRunSummary;
+    /** TRX results that had no matching tree node — callers use these to apply to newly discovered nodes. */
+    unmatchedResults: TrxTestResult[];
+    /** True when expected items had no TRX result (theory cases removed from source). */
+    hadRemovals: boolean;
+}
+
 export function applyTestResults(
     controller: vscode.TestController,
     results: TrxTestResult[],
     run: vscode.TestRun,
-    outputChannel: vscode.OutputChannel,
-    expectedItems?: readonly vscode.TestItem[]
-): TestRunSummary {
+    outputChannel: vscode.OutputChannel
+): ApplyTestResultsResult {
     const methodItemsByFqn = new Map<string, vscode.TestItem>();
     const caseItemsByFqnAndDisplayName = new Map<string, vscode.TestItem>();
     const orderedCasesByFqn = new Map<string, vscode.TestItem[]>();
@@ -25,6 +32,7 @@ export function applyTestResults(
 
     const itemStates = new Map<string, 'passed' | 'failed' | 'errored' | 'skipped'>();
     const matchedItems = new Set<vscode.TestItem>();
+    const appliedResults = new Set<TrxTestResult>();
     const summary: TestRunSummary = { passed: 0, failed: 0, skipped: 0, total: 0, executionTimeMs: 0 };
 
     // ── Phase 1: group TRX results by FQN, preserving first-seen order ──
@@ -38,16 +46,33 @@ export function applyTestResults(
         resultsByFqn.get(result.fullyQualifiedName)!.push(result);
     }
 
+    // Removals: a theory FQN has fewer TRX results than tree case nodes
+    let hadRemovals = false;
+    for (const [fqn, cases] of orderedCasesByFqn) {
+        if ((resultsByFqn.get(fqn)?.length ?? 0) < cases.length) {
+            hadRemovals = true;
+            break;
+        }
+    }
+
     // ── Phase 2: resolve theory FQNs → ordered list of (caseItem, result) ──
     const theoryResolutions = new Map<string, Array<{ caseItem: vscode.TestItem; result: TrxTestResult }>>();
+    const ignoredTheoryContainerResults = new Set<TrxTestResult>();
     for (const [fqn, fqnResults] of resultsByFqn) {
         const allCases = orderedCasesByFqn.get(fqn);
         if (!allCases) continue;
 
+        const candidateResults = fqnResults.filter(result => !isTheoryContainerResult(fqn, result.displayName));
+        for (const result of fqnResults) {
+            if (!candidateResults.includes(result)) {
+                ignoredTheoryContainerResults.add(result);
+            }
+        }
+
         const caseResultMap = new Map<string, TrxTestResult>(); // caseId → result
         const exactMatchedCaseIds = new Set<string>();
 
-        for (const result of fqnResults) {
+        for (const result of candidateResults) {
             const exactCase =
                 caseItemsByFqnAndDisplayName.get(buildCaseLookupKey(fqn, result.displayName)) ??
                 findCaseItemByTruncatedDisplayName(fqn, result.displayName, caseItemsByFqnAndDisplayName);
@@ -58,7 +83,7 @@ export function applyTestResults(
         }
 
         // Positional fallback for results whose display names didn't match
-        const unmatchedResults = fqnResults.filter(r =>
+        const unmatchedResults = candidateResults.filter(r =>
             !exactMatchedCaseIds.has(
                 (caseItemsByFqnAndDisplayName.get(buildCaseLookupKey(fqn, r.displayName)) ??
                  findCaseItemByTruncatedDisplayName(fqn, r.displayName, caseItemsByFqnAndDisplayName))?.id ?? ''
@@ -84,23 +109,23 @@ export function applyTestResults(
         if (resolved) {
             for (const { caseItem, result } of resolved) {
                 applyResultToItem(caseItem, result, run, itemStates, matchedItems, summary, outputChannel);
+                appliedResults.add(result);
             }
         } else {
             const methodItem = methodItemsByFqn.get(fqn);
             if (!methodItem) {
-                outputChannel.appendLine(`Warning: TRX contains test not found in tree: ${fqn}`);
+                outputChannel.appendLine(`[TreeSync] TRX result has no matching tree node: ${fqn}`);
                 continue;
             }
             for (const result of resultsByFqn.get(fqn) ?? []) {
                 applyResultToItem(methodItem, result, run, itemStates, matchedItems, summary, outputChannel);
+                appliedResults.add(result);
             }
         }
     }
 
-    const missingSkippedCount = markMissingExpectedResultsAsSkipped(expectedItems, itemStates, matchedItems, run);
-    summary.skipped += missingSkippedCount;
-    summary.total += missingSkippedCount;
-    return summary;
+    const unmatchedResults = results.filter(r => !appliedResults.has(r) && !ignoredTheoryContainerResults.has(r));
+    return { summary, unmatchedResults, hadRemovals };
 }
 
 // ─── result application ──────────────────────────────────────────────────────
@@ -336,46 +361,6 @@ function formatDuration(ms: number | undefined): string {
     return `${parseFloat(ms.toFixed(2))}ms`;
 }
 
-// ─── missing-result skipping ─────────────────────────────────────────────────
-
-function markMissingExpectedResultsAsSkipped(
-    expectedItems: readonly vscode.TestItem[] | undefined,
-    itemStates: Map<string, 'passed' | 'failed' | 'errored' | 'skipped'>,
-    matchedItems: Set<vscode.TestItem>,
-    run: vscode.TestRun
-): number {
-    if (!expectedItems || expectedItems.length === 0) return 0;
-
-    const expected = new Map<string, vscode.TestItem>();
-    for (const item of expectedItems) collectRunnableItems(item, expected);
-
-    let count = 0;
-    for (const item of expected.values()) {
-        if (itemStates.has(item.id)) continue;
-        run.skipped(item);
-        itemStates.set(item.id, 'skipped');
-        matchedItems.add(item);
-        count++;
-    }
-    return count;
-}
-
-function collectRunnableItems(root: vscode.TestItem, collected: Map<string, vscode.TestItem>): void {
-    const stack: vscode.TestItem[] = [root];
-    while (stack.length > 0) {
-        const cur = stack.pop()!;
-        const meta = getTestMetadata(cur);
-        if (
-            (meta?.kind === 'method' || meta?.kind === 'case') &&
-            !(meta?.kind === 'method' && cur.children.size > 0) &&
-            isLeafRunnableItem(cur)
-        ) {
-            collected.set(cur.id, cur);
-        }
-        cur.children.forEach(child => stack.push(child));
-    }
-}
-
 // ─── failed-result helpers ───────────────────────────────────────────────────
 
 function parseStackTraceLocation(stackTrace: string): { filePath: string; line: number } | undefined {
@@ -425,6 +410,11 @@ function addTestItemToMaps(
 
 function buildCaseLookupKey(fqn: string, displayName: string): string {
     return `${fqn}||${displayName}`;
+}
+
+function isTheoryContainerResult(fqn: string, displayName: string): boolean {
+    const methodName = fqn.split('.').pop() ?? fqn;
+    return displayName === methodName || displayName === fqn;
 }
 
 function findCaseItemByTruncatedDisplayName(

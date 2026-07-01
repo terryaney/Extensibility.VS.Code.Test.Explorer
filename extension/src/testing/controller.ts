@@ -381,6 +381,16 @@ export function getTestMetadata(item: vscode.TestItem): TestMetadata | undefined
  * 
  * @param controller The test controller
  */
+export function getKnownProjectPaths(controller: vscode.TestController): string[] {
+    const paths: string[] = [];
+    controller.items.forEach(item => {
+        if (!item.id.startsWith('diagnostic:')) {
+            paths.push(item.id); // root item IDs are .csproj paths
+        }
+    });
+    return paths;
+}
+
 export function clearTests(controller: vscode.TestController, testCountStatusBar: vscode.StatusBarItem): void {
     controller.items.forEach(item => {
         controller.items.delete(item.id);
@@ -530,7 +540,7 @@ export function createTestController(
     };
 
     // Create Run profile
-    const runHandler = createRunHandler(controller, workerClient, outputChannel);
+    const runHandler = createRunHandler(controller, workerClient, outputChannel, (project) => mergeProjectResults(controller, project));
     runProfileHandler = runHandler;
     controller.createRunProfile(
         'Run Tests',

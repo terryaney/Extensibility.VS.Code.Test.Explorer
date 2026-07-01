@@ -274,20 +274,7 @@ export function createDebugHandler(
                 }
 
                 // Wait for debug session to end
-                await new Promise<void>((resolve) => {
-                    const disposable = vscode.debug.onDidTerminateDebugSession((session) => {
-                        if (session.name === SESSION_NAME) {
-                            disposable.dispose();
-                            resolve();
-                        }
-                    });
-                    token.onCancellationRequested(() => {
-                        const sessionToStop = vscode.debug.sessions.find(s => s.name === SESSION_NAME);
-                        if (sessionToStop) { vscode.debug.stopDebugging(sessionToStop); }
-                        disposable.dispose();
-                        resolve();
-                    });
-                });
+                await waitForDebugSessionToEnd(SESSION_NAME, token);
 
                 trackerReg?.dispose();
                 outputChannel.appendLine('Debug session ended.');
@@ -301,7 +288,7 @@ export function createDebugHandler(
                     try {
                         const trxResults = await parseTrxFile(trxFile);
                         outputChannel.appendLine(`Parsed ${trxResults.length} result(s)`);
-                        const summary = applyTestResults(controller, trxResults, run, outputChannel, tests);
+                        const { summary } = applyTestResults(controller, trxResults, run, outputChannel);
                         appendSummaryBlock(run, summary, Date.now() - projectStartMs);
                     } catch (e) {
                         const msg = e instanceof Error ? e.message : String(e);
@@ -573,17 +560,7 @@ async function runXunitV3DirectSession(
     }
 
     // Wait for the debug session to end.
-    await new Promise<void>((resolve) => {
-        const disposable = vscode.debug.onDidTerminateDebugSession((session) => {
-            if (session.name === SESSION_NAME) { disposable.dispose(); resolve(); }
-        });
-        token.onCancellationRequested(() => {
-            const sessionToStop = vscode.debug.sessions.find(s => s.name === SESSION_NAME);
-            if (sessionToStop) { vscode.debug.stopDebugging(sessionToStop); }
-            disposable.dispose();
-            resolve();
-        });
-    });
+    await waitForDebugSessionToEnd(SESSION_NAME, token);
     outputChannel.appendLine('Debug session ended.');
 
     // Tests run after the debugger detaches; wait for the process to flush and write its TRX.
@@ -601,7 +578,7 @@ async function runXunitV3DirectSession(
             const trxResults = await parseTrxFile(trxPath);
             outputChannel.appendLine(`Parsed ${trxResults.length} result(s) from xUnit v3 TRX`);
             executed = trxResults.length;
-            summary = applyTestResults(controller, trxResults, run, outputChannel, tests);
+            ({ summary } = applyTestResults(controller, trxResults, run, outputChannel));
         } catch (e) {
             const msg = e instanceof Error ? e.message : String(e);
             outputChannel.appendLine(`xUnit v3 TRX parse failed (${msg}); falling back to console parsing`);
@@ -1113,18 +1090,43 @@ function collectTests(item: vscode.TestItem, tests: vscode.TestItem[]): void {
     item.children.forEach(child => collectTests(child, tests));
 }
 
-function enqueueTestAndAncestors(run: vscode.TestRun, test: vscode.TestItem): void {
-    run.enqueued(test);
-}
-
 function enqueueSelectedLeafRunnableItems(run: vscode.TestRun, test: vscode.TestItem): void {
-    if (isLeafRunnableItem(test)) {
-        enqueueTestAndAncestors(run, test);
-        return;
-    }
-
+    run.enqueued(test);
     test.children.forEach(child => {
         enqueueSelectedLeafRunnableItems(run, child);
+    });
+}
+
+function waitForDebugSessionToEnd(sessionName: string, token: vscode.CancellationToken): Promise<void> {
+    return new Promise<void>((resolve) => {
+        let sessionToStop: vscode.DebugSession | undefined =
+            vscode.debug.activeDebugSession?.name === sessionName ? vscode.debug.activeDebugSession : undefined;
+
+        const startDisposable = vscode.debug.onDidStartDebugSession((session) => {
+            if (session.name === sessionName) {
+                sessionToStop = session;
+            }
+        });
+
+        const terminateDisposable = vscode.debug.onDidTerminateDebugSession((session) => {
+            if (session.name !== sessionName) {
+                return;
+            }
+
+            startDisposable.dispose();
+            terminateDisposable.dispose();
+            resolve();
+        });
+
+        token.onCancellationRequested(() => {
+            if (sessionToStop) {
+                void vscode.debug.stopDebugging(sessionToStop);
+            }
+
+            startDisposable.dispose();
+            terminateDisposable.dispose();
+            resolve();
+        });
     });
 }
 

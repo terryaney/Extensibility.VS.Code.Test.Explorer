@@ -83,8 +83,10 @@ export async function parseTrxFile(trxFilePath: string): Promise<TrxTestResult[]
     // Process each test result
     for (const unitTestResult of unitTestResults) {
         const testId = unitTestResult['@_testId'];
-        const testName = unitTestResult['@_testName'];
-        const displayName = unitTestResult['@_testName'];
+        // fast-xml-parser escapes " as \" when parsing single-quoted XML attributes (xUnit v3 TRX
+        // uses single-quoted testName attributes). Unescape so display names match metadata.
+        const testName = (unitTestResult['@_testName'] as string)?.replace(/\\"/g, '"') ?? '';
+        const displayName = testName;
         const outcome = normalizeOutcome(unitTestResult['@_outcome']);
         const duration = parseDuration(unitTestResult['@_duration']);
         
