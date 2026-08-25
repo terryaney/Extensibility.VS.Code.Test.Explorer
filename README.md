@@ -57,6 +57,7 @@ Install [previous versions](#previous-versions) of the extension if needed.
 
 ## Previous Versions
 
+1. [1.0.14](https://github.com/terryaney/Extensibility.VS.Code.Test.Explorer/raw/main/dist/kat-test-explorer-1.0.14.vsix)
 1. [1.0.13](https://github.com/terryaney/Extensibility.VS.Code.Test.Explorer/raw/main/dist/kat-test-explorer-1.0.13.vsix)
 1. [1.0.11](https://github.com/terryaney/Extensibility.VS.Code.Test.Explorer/raw/main/dist/kat-test-explorer-1.0.11.vsix)
 1. [1.0.10](https://github.com/terryaney/Extensibility.VS.Code.Test.Explorer/raw/main/dist/kat-test-explorer-1.0.10.vsix)
