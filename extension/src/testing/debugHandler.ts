@@ -101,15 +101,19 @@ export function createDebugHandler(
                     continue;
                 }
 
-                // Determine whether this is an xUnit v3 project (output is a self-contained .exe).
-                // MSBuild's TargetPath always returns the managed .dll; the apphost .exe is generated
-                // alongside it for executable projects. Swap the extension to check for its presence.
+                // Determine whether this is an xUnit v3 project. MSBuild's TargetPath always returns
+                // the managed .dll; the apphost .exe is generated alongside it for executable projects.
+                // The .exe is required (v3 self-hosts its runner in the apphost) but is NOT sufficient
+                // evidence on its own: any test project built with an Exe-producing SDK (notably
+                // Microsoft.NET.Sdk.Web) emits an apphost even when the tests are xUnit v2, and that
+                // apphost's auto-generated Main exits immediately - so the direct path would spawn it,
+                // never see it become ready, and fail the whole run. Also require v3's own assemblies.
                 const targetPath = targetPathFromBuild ?? await getProjectTargetPath(projectPath, outputChannel);
                 const exePath = targetPath ? targetPath.replace(/\.dll$/i, '.exe') : undefined;
-                const isXunitV3 = !!exePath && fs.existsSync(exePath);
+                const isXunitV3 = !!targetPath && !!exePath && fs.existsSync(exePath) && hasXunitV3Assemblies(targetPath, outputChannel);
                 const directSelectionSupport = getXunitV3DirectSelectionSupport(tests);
                 const useXunitV3Direct = isXunitV3 && directSelectionSupport.supported;
-                outputChannel.appendLine(`Target path: ${targetPath ?? '(unknown)'} | exe: ${exePath ?? '(none)'} | xUnit v3 direct: ${useXunitV3Direct} | selection routing: ${directSelectionSupport.reason}`);
+                outputChannel.appendLine(`Target path: ${targetPath ?? '(unknown)'} | exe: ${exePath ?? '(none)'} | xUnit v3: ${isXunitV3} | xUnit v3 direct: ${useXunitV3Direct} | selection routing: ${directSelectionSupport.reason}`);
                 if (isXunitV3 && !directSelectionSupport.supported) {
                     outputChannel.appendLine(`Using VSTest fallback for precise debug selection: ${directSelectionSupport.reason}`);
                 }
@@ -351,6 +355,36 @@ function collectStringLeaves(value: unknown, maxDepth = 6): string[] {
 
     walk(value, 0);
     return results;
+}
+
+/**
+ * Returns whether the build output is actually xUnit v3, by looking for v3's own assemblies
+ * (xunit.v3.core.dll et al) beside the target. xUnit v2 ships xunit.core/xunit.execution.*
+ * instead, so the two are unambiguous here - unlike the presence of an apphost .exe, which
+ * only tells us the project's SDK produces an executable.
+ *
+ * Falls back to scanning the project's .deps.json when the output folder can't be listed.
+ */
+function hasXunitV3Assemblies(targetPath: string, outputChannel: vscode.OutputChannel): boolean {
+    const outputDirectory = path.dirname(targetPath);
+    try {
+        const hasV3Assembly = fs.readdirSync(outputDirectory)
+            .some((entry) => /^xunit\.v3\..*\.dll$/i.test(entry));
+        if (hasV3Assembly) { return true; }
+    } catch (err) {
+        outputChannel.appendLine(`Could not list ${outputDirectory} for xUnit v3 detection: ${err}`);
+    }
+
+    const depsPath = targetPath.replace(/\.dll$/i, '.deps.json');
+    try {
+        if (fs.existsSync(depsPath)) {
+            return /"xunit\.v3[./]/i.test(fs.readFileSync(depsPath, 'utf8'));
+        }
+    } catch (err) {
+        outputChannel.appendLine(`Could not read ${depsPath} for xUnit v3 detection: ${err}`);
+    }
+
+    return false;
 }
 
 /**
