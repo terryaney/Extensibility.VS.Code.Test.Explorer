@@ -326,9 +326,13 @@ function groupTestsByProject(tests: readonly vscode.TestItem[]): Map<string, vsc
 }
 
 /**
- * Marks all tests in a project with a specific state.
+ * Marks all runnable leaf tests under an item with a specific state.
  * Recursively processes all children.
- * 
+ *
+ * Container nodes (project/namespace/class) are skipped: the TRX only yields
+ * results for leaves, so a state applied to a container is never resolved and
+ * the node stays stuck in the Test Results panel for the life of the run.
+ *
  * @param run The test run
  * @param projectItem The project test item
  * @param state The state to apply ('enqueued' | 'passed' | 'errored')
@@ -338,17 +342,16 @@ function markProjectTests(
     projectItem: vscode.TestItem,
     state: 'enqueued' | 'passed' | 'errored'
 ): void {
-    // Apply state based on type
-    if (state === 'enqueued') {
-        run.enqueued(projectItem);
-    } else if (state === 'passed') {
-        run.passed(projectItem);
-    } else if (state === 'errored') {
-        if (isLeafRunnableItem(projectItem)) {
+    if (isLeafRunnableItem(projectItem)) {
+        if (state === 'enqueued') {
+            run.enqueued(projectItem);
+        } else if (state === 'passed') {
+            run.passed(projectItem);
+        } else {
             run.errored(projectItem, new vscode.TestMessage('Test execution failed'));
         }
     }
-    
+
     // Recursively process children
     projectItem.children.forEach(child => {
         markProjectTests(run, child, state);

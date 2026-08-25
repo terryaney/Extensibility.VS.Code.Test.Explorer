@@ -1125,7 +1125,11 @@ function collectTests(item: vscode.TestItem, tests: vscode.TestItem[]): void {
 }
 
 function enqueueSelectedLeafRunnableItems(run: vscode.TestRun, test: vscode.TestItem): void {
-    run.enqueued(test);
+    // Containers never receive an outcome from the debug output, so enqueuing
+    // them would leave them stuck in the Test Results panel.
+    if (isLeafRunnableItem(test)) {
+        run.enqueued(test);
+    }
     test.children.forEach(child => {
         enqueueSelectedLeafRunnableItems(run, child);
     });

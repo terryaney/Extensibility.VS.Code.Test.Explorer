@@ -226,11 +226,15 @@ function groupTestsByProject(tests: readonly vscode.TestItem[]): Map<string, vsc
     return grouped;
 }
 
+// Container nodes (project/namespace/class) are skipped: only leaves get a TRX
+// result, so a state applied to a container stays unresolved in the results panel.
 function markProjectTests(run: vscode.TestRun, item: vscode.TestItem, state: 'enqueued' | 'errored'): void {
-    if (state === 'enqueued') {
-        run.enqueued(item);
-    } else if (isLeafRunnableItem(item)) {
-        run.errored(item, new vscode.TestMessage('Test execution failed'));
+    if (isLeafRunnableItem(item)) {
+        if (state === 'enqueued') {
+            run.enqueued(item);
+        } else {
+            run.errored(item, new vscode.TestMessage('Test execution failed'));
+        }
     }
     item.children.forEach(child => markProjectTests(run, child, state));
 }
